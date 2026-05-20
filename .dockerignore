@@ -1,0 +1,9 @@
+node_modules
+playwright-report
+test-results
+storage/*.log
+storage/*.err
+storage/passmark.db
+storage/postgres
+npm-debug.log
+.git

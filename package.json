@@ -1,0 +1,35 @@
+{
+  "name": "passmark-project",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "web": "tsx src/server.ts",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate deploy",
+    "db:migrate:dev": "prisma migrate dev",
+    "db:seed": "tsx prisma/seed.ts",
+    "db:studio": "prisma studio",
+    "db:sqlite:apply": "tsx prisma/apply-sqlite-migration.ts",
+    "db:sqlite:migrate-to-postgres:dry-run": "tsx prisma/migrate-sqlite-to-postgres.ts --dry-run",
+    "db:sqlite:migrate-to-postgres": "tsx prisma/migrate-sqlite-to-postgres.ts",
+    "test": "playwright test",
+    "test:chromium": "playwright test --project=chromium",
+    "ai:seo": "tsx scripts/generate-seo-test.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "devDependencies": {
+    "@playwright/test": "^1.59.1",
+    "@types/node": "^25.6.2",
+    "prisma": "^5.22.0",
+    "tsx": "^4.20.0"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.22.0",
+    "dotenv": "^16.5.0",
+    "passmark": "^1.0.10",
+    "sql.js": "^1.14.1"
+  }
+}

@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Passmark AI Test Console</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/app.css">
+  </head>
+  <body>
+    <main class="shell">
+      <aside class="app-sidebar">
+        <a class="sidebar-brand" href="#">
+          <span class="brand-icon" aria-hidden="true"></span>
+          <span>
+            <strong data-i18n="top.project">Passmark TestOps</strong>
+            <small data-i18n="app.title">AI Automation Studio</small>
+          </span>
+        </a>
+        <nav class="sidebar-nav" aria-label="Workspace">
+          <a href="#run" class="active" data-page-link="run">
+            <span>01</span>
+            <strong data-i18n="nav.runCenter">Run Center</strong>
+          </a>
+          <a href="#projects" data-page-link="projects">
+            <span>02</span>
+            <strong data-i18n="nav.projects">Projects</strong>
+          </a>
+          <a href="#suites" data-page-link="suites">
+            <span>03</span>
+            <strong data-i18n="suite.testSuites">Test Suites</strong>
+          </a>
+          <a href="#reports" data-page-link="reports">
+            <span>04</span>
+            <strong data-i18n="nav.reports">Reports</strong>
+          </a>
+          <a href="#settings" data-page-link="settings">
+            <span>05</span>
+            <strong data-i18n="nav.settings">Settings</strong>
+          </a>
+        </nav>
+        <section class="sidebar-language">
+          <p class="eyebrow" data-i18n="settings.language">Language</p>
+          <div class="language-switcher" aria-label="Language">
+            <button type="button" data-lang="en">EN</button>
+            <button type="button" data-lang="vi">VI</button>
+          </div>
+        </section>
+        <section class="sidebar-status">
+          <p class="eyebrow" data-i18n="settings.status">System status</p>
+          <span class="status-pill" id="systemStatus" data-i18n="app.status.ready">Ready</span>
+        </section>
+        <section class="guide-card">
+          <p class="eyebrow" data-i18n="guide.eyebrow">Quick flow</p>
+          <h2 data-i18n="guide.title">How to run a test</h2>
+          <ol>
+            <li data-i18n="guide.stepProject">Choose or create a project.</li>
+            <li data-i18n="guide.stepSuite">Pick the suite that matches your goal.</li>
+            <li data-i18n="guide.stepRequest">Describe extra checks in AI request if needed.</li>
+            <li data-i18n="guide.stepRun">Click Run test and review results.</li>
+          </ol>
+        </section>
+      </aside>
+      <section class="workspace">
+        <section class="panel project-panel" data-page-section="projects suites">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow" data-i18n="projects.eyebrow">Project Management</p>
+              <h2 data-i18n="projects.title">Projects</h2>
+            </div>
+            <div class="heading-actions">
+              <span class="soft-count" id="projectCount">0 projects</span>
+              <button type="button" class="secondary compact-button" id="newProjectButton" data-i18n="projects.new">New project</button>
+            </div>
+          </div>
+          <div class="project-layout">
+            <div class="list-column">
+              <input id="projectSearch" class="search-input" type="search" placeholder="Search projects..." data-i18n-placeholder="projects.search">
+              <div class="project-list" id="projectList">
+                <p class="empty" data-i18n="projects.empty">No projects yet.</p>
+              </div>
+            </div>
+            <form class="project-form" id="projectForm">
+              <input id="projectId" type="hidden">
+              <div class="field-grid">
+                <label>
+                  <span data-i18n="projects.name">Project name</span>
+                  <input id="projectName" type="text" placeholder="Vietnix SEO" required>
+                </label>
+                <label>
+                  <span data-i18n="projects.environment">Environment</span>
+                  <select id="projectEnvironment">
+                    <option value="dev">Dev</option>
+                    <option value="staging">Staging</option>
+                    <option value="production" selected>Production</option>
+                  </select>
+                </label>
+                <label class="full-field">
+                  <span data-i18n="projects.baseUrl">Base URL</span>
+                  <input id="projectBaseUrl" type="url" placeholder="https://example.com/" required>
+                </label>
+                <label class="full-field">
+                  <span data-i18n="projects.description">Description</span>
+                  <textarea
+                    id="projectDescription"
+                    class="plain-textarea"
+                    placeholder="SEO testing project for main website"
+                    data-i18n-placeholder="projects.descriptionPlaceholder"
+                  ></textarea>
+                </label>
+              </div>
+              <div class="button-row">
+                <button type="submit" id="saveProjectButton" data-i18n="projects.save">Save project</button>
+                <button type="button" class="secondary" id="deleteProjectButton" disabled data-i18n="common.delete">Delete</button>
+              </div>
+            </form>
+          </div>
+          <div class="suite-layout">
+            <div>
+              <div class="suite-heading">
+                <div>
+                  <p class="eyebrow" data-i18n="suite.eyebrow">Test Suite</p>
+                  <h2 data-i18n="suite.title">Suites</h2>
+                </div>
+                <div class="heading-actions">
+                  <span class="soft-count" id="suiteCount">0 suites</span>
+                  <button type="button" class="secondary compact-button" id="newSuiteButton" data-i18n="suite.new">New suite</button>
+                </div>
+              </div>
+              <div class="list-column">
+                <input id="suiteSearch" class="search-input" type="search" placeholder="Search suites..." data-i18n-placeholder="suite.search">
+                <div class="suite-list" id="suiteList">
+                  <p class="empty" data-i18n="suite.emptyProject">Select a project to manage suites.</p>
+                </div>
+              </div>
+            </div>
+            <form class="suite-form" id="suiteForm">
+              <input id="suiteId" type="hidden">
+              <div class="field-grid">
+                <label>
+                  <span data-i18n="suite.name">Suite name</span>
+                  <input id="suiteName" type="text" placeholder="Basic SEO" required>
+                </label>
+                <label>
+                  <span data-i18n="suite.type">Type</span>
+                  <select id="suiteType" class="hidden-select" aria-hidden="true" tabindex="-1">
+                    <option value="seo-basic">SEO Basic</option>
+                    <option value="seo-technical">SEO Technical</option>
+                    <option value="broken-links">Broken Links</option>
+                    <option value="image-alt">Image Alt</option>
+                    <option value="accessibility">Accessibility</option>
+                    <option value="custom">Custom</option>
+                  </select>
+                </label>
+                <div class="suite-type-menu full-field" id="suiteTypeMenu">
+                  <button type="button" data-suite-type="seo-basic">SEO Basic</button>
+                  <button type="button" data-suite-type="seo-technical">SEO Technical</button>
+                  <button type="button" data-suite-type="broken-links">Broken Links</button>
+                  <button type="button" data-suite-type="image-alt">Image Alt</button>
+                  <button type="button" data-suite-type="accessibility">Accessibility</button>
+                  <button type="button" data-suite-type="custom">Custom</button>
+                </div>
+                <label class="toggle-field">
+                  <input id="suiteEnabled" type="checkbox" checked>
+                  <span>
+                    <strong data-i18n="suite.enabled">Enabled</strong>
+                    <small data-i18n="suite.enabledHint">Use this suite when running tests.</small>
+                  </span>
+                </label>
+                <label class="full-field">
+                  <span data-i18n="projects.description">Description</span>
+                  <textarea
+                    id="suiteDescription"
+                    class="plain-textarea"
+                    placeholder="Run standard title, meta description, canonical, H1, lang, and viewport checks"
+                    data-i18n-placeholder="suite.descriptionPlaceholder"
+                  ></textarea>
+                </label>
+              </div>
+              <div class="suite-config-panel" id="suiteConfigPanel"></div>
+              <div class="button-row">
+                <button type="submit" id="saveSuiteButton" data-i18n="suite.save">Save suite</button>
+                <button type="button" class="secondary" id="deleteSuiteButton" disabled data-i18n="common.delete">Delete</button>
+              </div>
+            </form>
+          </div>
+        </section>
+
+        <form class="control-panel" id="testForm" data-page-section="run">
+          <label for="projectSelect" data-i18n="run.selectedProject">Selected project</label>
+          <div class="url-row project-select-row">
+            <select id="projectSelect">
+              <option value="" data-i18n="common.manualUrl">Manual URL</option>
+            </select>
+            <span class="project-selected-meta" id="projectSelectedMeta">No project selected</span>
+          </div>
+
+          <label for="suiteSelect" data-i18n="run.selectedSuite">Selected test suite</label>
+          <div class="url-row project-select-row">
+            <select id="suiteSelect">
+              <option value="" data-i18n="suite.noSelected">No suite selected</option>
+            </select>
+            <span class="project-selected-meta" id="suiteSelectedMeta">Select a project to load suites</span>
+          </div>
+
+          <label for="siteUrl" data-i18n="run.websiteUrl">Website URL</label>
+          <div class="url-row">
+            <input
+              id="siteUrl"
+              name="siteUrl"
+              type="url"
+              value="https://example.com/"
+              placeholder="https://example.com/"
+              required
+            >
+          </div>
+
+          <section class="auth-panel">
+            <div class="auth-heading">
+              <label for="authMode" data-i18n="run.authentication">Authentication</label>
+              <select id="authMode" name="authMode">
+                <option value="none" data-i18n="run.noLogin">No login</option>
+                <option value="password" data-i18n="run.usernamePassword">Username / Password</option>
+              </select>
+            </div>
+            <div class="auth-fields" id="authFields" hidden>
+              <div class="field-grid">
+                <label>
+                  <span data-i18n="run.loginUrl">Login URL</span>
+                  <input id="loginUrl" type="url" placeholder="https://example.com/login">
+                </label>
+                <label>
+                  <span data-i18n="run.username">Username</span>
+                  <input id="authUsername" type="text" autocomplete="username">
+                </label>
+                <label>
+                  <span data-i18n="run.password">Password</span>
+                  <input id="authPassword" type="password" autocomplete="current-password">
+                </label>
+                <label>
+                  <span data-i18n="run.successSelector">Success selector</span>
+                  <input id="successSelector" type="text" placeholder=".dashboard, nav[aria-label]">
+                </label>
+              </div>
+              <details class="selector-details">
+                <summary data-i18n="run.advancedSelectors">Advanced selectors</summary>
+                <div class="field-grid">
+                  <label>
+                    <span data-i18n="run.usernameSelector">Username selector</span>
+                    <input id="usernameSelector" type="text" placeholder='input[name="email"]'>
+                  </label>
+                  <label>
+                    <span data-i18n="run.passwordSelector">Password selector</span>
+                    <input id="passwordSelector" type="text" placeholder='input[type="password"]'>
+                  </label>
+                  <label>
+                    <span data-i18n="run.submitSelector">Submit selector</span>
+                    <input id="submitSelector" type="text" placeholder='button[type="submit"]'>
+                  </label>
+                </div>
+              </details>
+            </div>
+          </section>
+
+          <label class="prompt-label" for="aiRequest" data-i18n="run.aiRequest">AI request</label>
+          <div class="prompt-row">
+            <textarea
+              id="aiRequest"
+              class="prompt-input"
+              placeholder="Example: add checks for Open Graph title, robots meta, image alt text..."
+              data-i18n-placeholder="run.aiPlaceholder"
+            ></textarea>
+          </div>
+          <div class="button-row">
+            <button type="submit" id="runButton" data-i18n="run.runTest">Run test</button>
+            <button type="button" class="secondary" id="generateButton" data-i18n="run.generate">Generate only</button>
+            <button type="button" class="secondary" id="refreshButton" data-i18n="run.refresh">Refresh history</button>
+          </div>
+          <div class="progress-panel" id="progressPanel">
+            <div class="progress-bar">
+              <span id="progressBar"></span>
+            </div>
+            <ol class="steps" id="stepsList">
+              <li data-step="generate" data-i18n="run.stepGenerate">Generate test plan</li>
+              <li data-step="save" data-i18n="run.stepSave">Save Playwright file</li>
+              <li data-step="run" data-i18n="run.stepRun">Run Chromium test</li>
+              <li data-step="store" data-i18n="run.stepStore">Save result history</li>
+            </ol>
+          </div>
+        </form>
+
+        <section class="result-grid" data-page-section="run">
+          <article class="panel summary-panel">
+            <div class="panel-heading">
+              <h2 data-i18n="run.latest">Latest result</h2>
+              <span id="latestTime" data-i18n="run.noRunYet">No run yet</span>
+            </div>
+            <div class="metrics">
+              <div>
+                <strong id="metricTotal">0</strong>
+                <span data-i18n="common.total">Total</span>
+              </div>
+              <div>
+                <strong id="metricPassed">0</strong>
+                <span data-i18n="common.passed">Passed</span>
+              </div>
+              <div>
+                <strong id="metricFailed">0</strong>
+                <span data-i18n="common.failed">Failed</span>
+              </div>
+              <div>
+                <strong id="metricDuration">0s</strong>
+                <span data-i18n="common.duration">Duration</span>
+              </div>
+            </div>
+          </article>
+
+          <article class="panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow" data-i18n="flow.eyebrow">AI Rendered Flow</p>
+                <h2 data-i18n="flow.title">Test cases</h2>
+              </div>
+              <button type="button" class="secondary compact-button" id="toggleCodeButton" data-i18n="flow.showCode">Show code</button>
+            </div>
+            <div class="generated-plan" id="generatedPlan">
+              <div class="space-empty">
+                <strong data-i18n="flow.emptyTitle">No rendered cases yet</strong>
+                <span data-i18n="flow.emptyText">Generate a test to see AI test cases floating here.</span>
+              </div>
+            </div>
+            <div class="code-panel" id="codePanel" hidden>
+              <div class="code-panel-heading">
+                <span id="generatedPath">tests/generated-seo.spec.ts</span>
+              </div>
+              <textarea
+                id="generatedCode"
+                readonly
+                spellcheck="false"
+                placeholder="Generate a test to preview the Playwright code here."
+              ></textarea>
+            </div>
+          </article>
+        </section>
+
+        <section class="panel history-panel" data-page-section="reports">
+          <div class="panel-heading">
+            <h2 data-i18n="history.title">Run history</h2>
+            <span id="historyCount" data-i18n="history.lastRuns">Last 50 runs</span>
+          </div>
+          <div class="history" id="historyList"></div>
+          <div class="pagination" id="historyPagination">
+            <button type="button" class="secondary" id="prevPageButton" data-i18n="common.previous">Previous</button>
+            <span id="pageInfo">Page 1 of 1</span>
+            <button type="button" class="secondary" id="nextPageButton" data-i18n="common.next">Next</button>
+          </div>
+        </section>
+
+        <section class="panel settings-panel" data-page-section="settings">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow" data-i18n="nav.settings">Settings</p>
+              <h2 data-i18n="settings.title">Workspace settings</h2>
+            </div>
+          </div>
+          <div class="settings-grid">
+            <section class="settings-card">
+              <p class="eyebrow" data-i18n="settings.language">Language</p>
+              <div class="language-switcher" aria-label="Language">
+                <button type="button" data-lang="en">EN</button>
+                <button type="button" data-lang="vi">VI</button>
+              </div>
+            </section>
+            <section class="settings-card">
+              <p class="eyebrow" data-i18n="settings.status">System status</p>
+              <span class="status-pill status-preview" data-i18n="app.status.ready">Ready</span>
+            </section>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <div class="detail-overlay" id="detailOverlay" hidden>
+      <section class="detail-panel" role="dialog" aria-modal="true" aria-labelledby="detailTitle">
+        <div class="detail-header">
+          <div>
+            <p class="eyebrow" data-i18n="detail.eyebrow">Run detail</p>
+            <h2 id="detailTitle">Test cases</h2>
+          </div>
+          <button type="button" class="secondary icon-button" id="closeDetailButton" data-i18n="common.close">Close</button>
+        </div>
+        <div class="detail-summary" id="detailSummary"></div>
+        <div class="case-list" id="caseList"></div>
+      </section>
+    </div>
+
+    <div class="fact-overlay" id="factOverlay" hidden>
+      <section class="fact-panel" role="dialog" aria-modal="true" aria-labelledby="factTitle">
+        <div class="fact-header">
+          <div>
+            <p class="eyebrow" data-i18n="factDetail.eyebrow">Case detail</p>
+            <h2 id="factTitle">Detail</h2>
+          </div>
+          <button type="button" class="secondary icon-button" id="closeFactButton" data-i18n="common.close">Close</button>
+        </div>
+        <div id="factBody" class="fact-body"></div>
+      </section>
+    </div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

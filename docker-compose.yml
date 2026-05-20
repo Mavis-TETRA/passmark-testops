@@ -1,0 +1,34 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: passmark
+      POSTGRES_PASSWORD: passmark
+      POSTGRES_DB: passmark
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./storage/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U passmark -d passmark"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PORT: 5000
+      DATABASE_URL: postgresql://passmark:passmark@postgres:5432/passmark
+      LOCAL_AI_BASE_URL: ${LOCAL_AI_BASE_URL:?LOCAL_AI_BASE_URL is required}
+      LOCAL_AI_API_KEY: ${LOCAL_AI_API_KEY:?LOCAL_AI_API_KEY is required}
+      LOCAL_AI_MODEL: ${LOCAL_AI_MODEL:?LOCAL_AI_MODEL is required}
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./storage:/app/storage
+      - ./test-results:/app/test-results
+      - ./playwright-report:/app/playwright-report

@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="markA" x1="8" y1="8" x2="56" y2="56" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#22d3ee"/>
+      <stop offset="0.48" stop-color="#2563eb"/>
+      <stop offset="1" stop-color="#7c3aed"/>
+    </linearGradient>
+    <linearGradient id="markB" x1="16" y1="48" x2="48" y2="16" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#14b8a6"/>
+      <stop offset="1" stop-color="#5b2fd6"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="16" fill="#11151d"/>
+  <path d="M18 18h28v28H18z" rx="7" fill="url(#markA)"/>
+  <path d="M18 46 46 18v28H18z" fill="url(#markB)" opacity=".92"/>
+</svg>

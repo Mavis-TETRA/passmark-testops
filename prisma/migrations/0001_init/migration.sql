@@ -1,0 +1,3 @@
+-- Legacy placeholder.
+-- The original SQLite migration was moved to prisma/legacy-sqlite/0001_init.
+-- PostgreSQL tables are created by 0001_postgresql_init.
