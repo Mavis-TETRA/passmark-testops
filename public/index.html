@@ -115,6 +115,71 @@
               </div>
             </form>
           </div>
+          <div class="target-layout">
+            <div>
+              <div class="target-heading">
+                <div>
+                  <p class="eyebrow" data-i18n="target.eyebrow">Test Target</p>
+                  <h2 data-i18n="target.title">Targets</h2>
+                </div>
+                <div class="heading-actions">
+                  <span class="soft-count" id="targetCount">0 targets</span>
+                  <button type="button" class="secondary compact-button" id="newTargetButton" data-i18n="target.new">New target</button>
+                </div>
+              </div>
+              <div class="list-column">
+                <input id="targetSearch" class="search-input" type="search" placeholder="Search targets..." data-i18n-placeholder="target.search">
+                <div class="target-list" id="targetList">
+                  <p class="empty" data-i18n="target.emptyProject">Select a project to manage targets.</p>
+                </div>
+              </div>
+            </div>
+            <form class="target-form" id="targetForm">
+              <input id="targetId" type="hidden">
+              <div class="field-grid">
+                <label>
+                  <span data-i18n="target.name">Target name</span>
+                  <input id="targetName" type="text" placeholder="Production website" required>
+                </label>
+                <label>
+                  <span data-i18n="target.type">Target type</span>
+                  <select id="targetType">
+                    <option value="web-url" data-i18n="target.type.webUrl">Web URL</option>
+                    <option value="local-web" data-i18n="target.type.localWeb">Local web</option>
+                    <option value="source-code" data-i18n="target.type.sourceCode">Source code</option>
+                    <option value="api" data-i18n="target.type.api">API</option>
+                  </select>
+                </label>
+                <label class="full-field target-url-field">
+                  <span data-i18n="target.url">Target URL</span>
+                  <input id="targetUrl" type="url" placeholder="https://example.com/">
+                </label>
+                <label class="full-field target-path-field">
+                  <span data-i18n="target.localPath">Local path</span>
+                  <input id="targetLocalPath" type="text" placeholder="D:\Work\project">
+                </label>
+                <label class="toggle-field">
+                  <input id="targetEnabled" type="checkbox" checked>
+                  <span>
+                    <strong data-i18n="target.enabled">Target is active</strong>
+                    <small data-i18n="target.enabledHint">Use this target when running tests.</small>
+                  </span>
+                </label>
+                <label class="full-field">
+                  <span data-i18n="target.config">Config JSON</span>
+                  <textarea
+                    id="targetConfig"
+                    class="plain-textarea"
+                    placeholder="{}"
+                  ></textarea>
+                </label>
+              </div>
+              <div class="button-row">
+                <button type="submit" id="saveTargetButton" data-i18n="target.save">Save target</button>
+                <button type="button" class="secondary" id="deleteTargetButton" disabled data-i18n="common.delete">Delete</button>
+              </div>
+            </form>
+          </div>
           <div class="suite-layout">
             <div>
               <div class="suite-heading">
@@ -201,6 +266,14 @@
               <option value="" data-i18n="suite.noSelected">No suite selected</option>
             </select>
             <span class="project-selected-meta" id="suiteSelectedMeta">Select a project to load suites</span>
+          </div>
+
+          <label for="targetSelect" data-i18n="run.selectedTarget">Selected target</label>
+          <div class="url-row project-select-row target-select-row">
+            <select id="targetSelect">
+              <option value="" data-i18n="target.noSelected">No target selected</option>
+            </select>
+            <span class="project-selected-meta" id="targetSelectedMeta">Fallback to project base URL</span>
           </div>
 
           <label for="siteUrl" data-i18n="run.websiteUrl">Website URL</label>

@@ -73,6 +73,7 @@ Các model chính:
 
 - `Project`
 - `Environment`
+- `TestTarget`
 - `TestSuite`
 - `TestCase`
 - `TestRun`
@@ -220,22 +221,23 @@ docker compose up -d postgres
 ## Flow Chính Của Hệ Thống
 
 1. User tạo hoặc chọn Project.
-2. Project có `baseUrl`, environment và test suites.
-3. User chọn Test Suite trong Run Center.
-4. User nhập URL hoặc lấy URL từ project.
-5. User nhập AI request nếu muốn.
-6. Backend gọi local AI để tạo test plan JSON.
-7. Backend validate JSON.
-8. Với suite `seo-basic`, backend render Playwright spec bằng template ổn định.
-9. Backend chạy Playwright:
+2. Project có `baseUrl`, environment, test targets và test suites.
+3. User chọn Test Suite và Test Target trong Run Center.
+4. Nếu target là `web-url`, `local-web` hoặc `api`, hệ thống dùng `target.url`; nếu không chọn target thì fallback về `project.baseUrl`.
+5. Target `source-code` lưu `localPath` để dùng cho source scan sau này.
+6. User nhập AI request nếu muốn.
+7. Backend gọi local AI để tạo test plan JSON.
+8. Backend validate JSON.
+9. Với suite `seo-basic`, backend render Playwright spec bằng template ổn định.
+10. Backend chạy Playwright:
 
 ```powershell
 npx playwright test <specPath> --project=chromium --reporter=json
 ```
 
-10. Backend parse result.
-11. Backend lưu `TestRun`, `TestResult`, `Artifact`, `AIRequestLog` vào PostgreSQL.
-12. UI hiển thị Latest Result, AI rendered flow và Run History.
+11. Backend parse result.
+12. Backend lưu `targetId` trong `TestRun`, cùng `TestResult`, `Artifact`, `AIRequestLog` vào PostgreSQL.
+13. UI hiển thị Latest Result, AI rendered flow và Run History.
 
 ## SEO Basic Cases Mặc Định
 
@@ -294,6 +296,22 @@ POST   /api/test-suites
 PUT    /api/test-suites/:id
 DELETE /api/test-suites/:id
 ```
+
+### Test Targets
+
+```http
+GET    /api/test-targets?projectId=...
+POST   /api/test-targets
+PUT    /api/test-targets/:id
+DELETE /api/test-targets/:id
+```
+
+Supported target types:
+
+- `web-url`
+- `local-web`
+- `source-code`
+- `api`
 
 ### Runs
 
