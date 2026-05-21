@@ -248,6 +248,67 @@
                 <button type="button" class="secondary" id="deleteSuiteButton" disabled data-i18n="common.delete">Delete</button>
               </div>
             </form>
+            <section class="case-library">
+              <div>
+                <div class="case-library-heading">
+                  <div>
+                    <p class="eyebrow" data-i18n="case.eyebrow">Test Case Library</p>
+                    <h2 data-i18n="case.title">Test cases</h2>
+                  </div>
+                  <div class="heading-actions">
+                    <span class="soft-count" id="caseCount">0 cases</span>
+                    <button type="button" class="secondary compact-button" id="newCaseButton" data-i18n="case.new">New case</button>
+                  </div>
+                </div>
+                <div class="list-column">
+                  <input id="caseSearch" class="search-input" type="search" placeholder="Search cases..." data-i18n-placeholder="case.search">
+                  <div class="case-library-list" id="caseLibraryList">
+                    <p class="empty" data-i18n="case.emptySuite">Select a suite to manage cases.</p>
+                  </div>
+                </div>
+              </div>
+              <form class="case-form" id="caseForm">
+                <input id="caseId" type="hidden">
+                <div class="field-grid">
+                  <label>
+                    <span data-i18n="case.code">Code</span>
+                    <input id="caseCode" type="text" placeholder="SEO-008" required>
+                  </label>
+                  <label>
+                    <span data-i18n="case.priority">Priority</span>
+                    <select id="casePriority">
+                      <option value="low" data-i18n="case.priority.low">Low</option>
+                      <option value="medium" data-i18n="case.priority.medium">Medium</option>
+                      <option value="high" data-i18n="case.priority.high">High</option>
+                      <option value="critical" data-i18n="case.priority.critical">Critical</option>
+                    </select>
+                  </label>
+                  <label class="full-field">
+                    <span data-i18n="case.name">Name</span>
+                    <input id="caseName" type="text" placeholder="Meta robots exists" required>
+                  </label>
+                  <label class="toggle-field">
+                    <input id="caseEnabled" type="checkbox" checked>
+                    <span>
+                      <strong data-i18n="case.enabled">Case is active</strong>
+                      <small data-i18n="case.enabledHint">Only enabled cases run in this suite.</small>
+                    </span>
+                  </label>
+                  <label class="full-field">
+                    <span data-i18n="case.description">Description</span>
+                    <textarea id="caseDescription" class="plain-textarea" data-i18n-placeholder="case.descriptionPlaceholder" placeholder="Describe what this case checks"></textarea>
+                  </label>
+                  <label class="full-field">
+                    <span data-i18n="case.expectedResult">Expected result</span>
+                    <textarea id="caseExpectedResult" class="plain-textarea" data-i18n-placeholder="case.expectedPlaceholder" placeholder="Describe the expected result"></textarea>
+                  </label>
+                </div>
+                <div class="button-row">
+                  <button type="submit" id="saveCaseButton" data-i18n="case.save">Save case</button>
+                  <button type="button" class="secondary" id="deleteCaseButton" disabled data-i18n="common.delete">Delete</button>
+                </div>
+              </form>
+            </section>
           </div>
         </section>
 
