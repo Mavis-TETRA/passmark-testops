@@ -278,7 +278,7 @@ function refreshLocalizedUi() {
 }
 
 function showPage(page, options = {}) {
-  const nextPage = ['run', 'projects', 'suites', 'reports', 'settings'].includes(page) ? page : 'run';
+  const nextPage = ['run', 'projects', 'suites', 'reports', 'settings', 'docs'].includes(page) ? page : 'run';
   pageState.current = nextPage;
   document.body.dataset.page = nextPage;
 
