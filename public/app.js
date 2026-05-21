@@ -27,6 +27,19 @@ const suiteDescription = document.querySelector('#suiteDescription');
 const suiteEnabled = document.querySelector('#suiteEnabled');
 const newSuiteButton = document.querySelector('#newSuiteButton');
 const deleteSuiteButton = document.querySelector('#deleteSuiteButton');
+const caseForm = document.querySelector('#caseForm');
+const caseLibraryList = document.querySelector('#caseLibraryList');
+const caseSearch = document.querySelector('#caseSearch');
+const caseCount = document.querySelector('#caseCount');
+const caseId = document.querySelector('#caseId');
+const caseCode = document.querySelector('#caseCode');
+const caseName = document.querySelector('#caseName');
+const caseDescription = document.querySelector('#caseDescription');
+const casePriority = document.querySelector('#casePriority');
+const caseEnabled = document.querySelector('#caseEnabled');
+const caseExpectedResult = document.querySelector('#caseExpectedResult');
+const newCaseButton = document.querySelector('#newCaseButton');
+const deleteCaseButton = document.querySelector('#deleteCaseButton');
 const targetForm = document.querySelector('#targetForm');
 const targetList = document.querySelector('#targetList');
 const targetSearch = document.querySelector('#targetSearch');
@@ -111,6 +124,11 @@ const projectState = {
 };
 const suiteState = {
   suites: [],
+  selectedId: '',
+  query: '',
+};
+const caseState = {
+  cases: [],
   selectedId: '',
   query: '',
 };
@@ -244,6 +262,7 @@ function refreshLocalizedUi() {
   renderProjects();
   renderTargets();
   renderSuites();
+  renderCases();
   renderHistory();
   renderSuiteConfig(readSuiteConfig());
 
@@ -349,6 +368,14 @@ function formatDuration(ms) {
 }
 
 function statusText(status) {
+  if (status === 'queued') {
+    return t('common.queued', 'Queued');
+  }
+
+  if (status === 'running') {
+    return t('common.running', 'Running');
+  }
+
   if (status === 'passed') {
     return t('common.passed', 'Passed');
   }
@@ -361,7 +388,19 @@ function statusText(status) {
     return t('common.error', 'Error');
   }
 
+  if (status === 'cancelled') {
+    return t('common.cancelled', 'Cancelled');
+  }
+
   return status || '';
+}
+
+function isRunDone(run) {
+  return ['passed', 'failed', 'cancelled'].includes(run?.status);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function escapeHtml(value = '') {
@@ -400,6 +439,10 @@ function getSelectedProject() {
 
 function getSelectedSuite() {
   return suiteState.suites.find((suite) => suite.id === suiteState.selectedId);
+}
+
+function getSelectedCase() {
+  return caseState.cases.find((testCase) => testCase.id === caseState.selectedId);
 }
 
 function getSelectedTarget() {
@@ -532,6 +575,17 @@ function resetSuiteForm() {
   setSuiteType('seo-basic');
 }
 
+function resetCaseForm() {
+  caseId.value = '';
+  caseCode.value = '';
+  caseName.value = '';
+  caseDescription.value = '';
+  casePriority.value = 'medium';
+  caseEnabled.checked = true;
+  caseExpectedResult.value = '';
+  deleteCaseButton.disabled = true;
+}
+
 function resetTargetForm() {
   targetId.value = '';
   targetName.value = '';
@@ -551,6 +605,17 @@ function fillSuiteForm(suite) {
   suiteEnabled.checked = Boolean(suite.enabled);
   deleteSuiteButton.disabled = false;
   setSuiteType(suite.type || 'seo-basic', suite.config || {});
+}
+
+function fillCaseForm(testCase) {
+  caseId.value = testCase.id;
+  caseCode.value = testCase.code;
+  caseName.value = testCase.name;
+  caseDescription.value = testCase.description || '';
+  casePriority.value = testCase.priority || 'medium';
+  caseEnabled.checked = Boolean(testCase.enabled);
+  caseExpectedResult.value = testCase.expectedResult || '';
+  deleteCaseButton.disabled = false;
 }
 
 function fillTargetForm(target) {
@@ -586,8 +651,11 @@ function selectProject(projectIdValue) {
   projectState.selectedId = projectIdValue || '';
   projectSelect.value = projectState.selectedId;
   suiteState.selectedId = '';
+  caseState.selectedId = '';
+  caseState.cases = [];
   targetState.selectedId = '';
   resetSuiteForm();
+  resetCaseForm();
   resetTargetForm();
 
   const project = getSelectedProject();
@@ -596,8 +664,10 @@ function selectProject(projectIdValue) {
     projectSelectedMeta.textContent = t('common.manualUrl', 'Manual URL');
     suiteState.suites = [];
     targetState.targets = [];
+    caseState.cases = [];
     renderTargets();
     renderSuites();
+    renderCases();
     resetProjectForm();
     return;
   }
@@ -857,9 +927,81 @@ function renderSuites() {
     : t('suite.noSelected', 'No suite selected');
 }
 
+function renderCases() {
+  caseLibraryList.innerHTML = '';
+  caseCount.textContent = t('case.count', '{count} {item}', {
+    count: caseState.cases.length,
+    item: caseState.cases.length === 1
+      ? t('case.itemSingular', 'case')
+      : t('case.itemPlural', 'cases'),
+  });
+
+  const suite = getSelectedSuite();
+
+  if (!suite) {
+    caseLibraryList.innerHTML = `<p class="empty">${escapeHtml(t('case.emptySuite', 'Select a suite to manage cases.'))}</p>`;
+    return;
+  }
+
+  if (!caseState.cases.length) {
+    caseLibraryList.innerHTML = `<p class="empty">${escapeHtml(t('case.empty', 'No test cases for this suite yet.'))}</p>`;
+    return;
+  }
+
+  const query = caseState.query.toLowerCase();
+  const visibleCases = caseState.cases.filter((testCase) => {
+    const haystack = `${testCase.code} ${testCase.name} ${testCase.description} ${testCase.priority} ${testCase.expectedResult} ${testCase.enabled ? 'enabled' : 'disabled'}`.toLowerCase();
+    return haystack.includes(query);
+  });
+
+  if (!visibleCases.length) {
+    caseLibraryList.innerHTML = `<p class="empty">${escapeHtml(t('case.emptySearch', 'No cases match this search.'))}</p>`;
+  }
+
+  for (const testCase of visibleCases) {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = `case-library-item${testCase.id === caseState.selectedId ? ' active' : ''}${testCase.enabled ? '' : ' disabled'}`;
+    item.innerHTML = `
+      <span>
+        <strong>${escapeHtml(testCase.name)}</strong>
+        <small>${escapeHtml(testCase.description || testCase.expectedResult || testCase.code)}</small>
+      </span>
+      <span>
+        <span class="case-code-badge">${escapeHtml(testCase.code)}</span>
+        <small class="case-priority-badge ${escapeHtml(testCase.priority || 'medium')}">${escapeHtml(testCase.priority || 'medium')}</small>
+        <small class="suite-state">${testCase.enabled ? escapeHtml(t('common.enabled', 'enabled')) : escapeHtml(t('common.disabled', 'disabled'))}</small>
+      </span>
+    `;
+    item.addEventListener('click', () => selectCase(testCase.id));
+    caseLibraryList.appendChild(item);
+  }
+
+  if (caseState.selectedId && !getSelectedCase()) {
+    caseState.selectedId = '';
+  }
+}
+
+function selectCase(caseIdValue) {
+  caseState.selectedId = caseIdValue || '';
+  const testCase = getSelectedCase();
+
+  if (!testCase) {
+    resetCaseForm();
+    renderCases();
+    return;
+  }
+
+  fillCaseForm(testCase);
+  renderCases();
+}
+
 function selectSuite(suiteIdValue) {
   suiteState.selectedId = suiteIdValue || '';
   suiteSelect.value = suiteState.selectedId;
+  caseState.selectedId = '';
+  caseState.cases = [];
+  resetCaseForm();
 
   const suite = getSelectedSuite();
 
@@ -867,19 +1009,27 @@ function selectSuite(suiteIdValue) {
     suiteSelectedMeta.textContent = t('suite.noSelected', 'No suite selected');
     resetSuiteForm();
     renderSuites();
+    renderCases();
     return;
   }
 
   suiteSelectedMeta.textContent = `${suite.type} | ${suite.enabled ? t('common.enabled', 'enabled') : t('common.disabled', 'disabled')}`;
   fillSuiteForm(suite);
   renderSuites();
+  loadCases(suite.id).catch((error) => {
+    generatedCode.value = error.message;
+    setStatus(t('common.error', 'Error'), 'failed');
+  });
 }
 
 async function loadSuites(projectIdValue = projectState.selectedId) {
   if (!projectIdValue) {
     suiteState.suites = [];
     suiteState.selectedId = '';
+    caseState.cases = [];
+    caseState.selectedId = '';
     renderSuites();
+    renderCases();
     return;
   }
 
@@ -891,6 +1041,24 @@ async function loadSuites(projectIdValue = projectState.selectedId) {
   }
 
   renderSuites();
+}
+
+async function loadCases(suiteIdValue = suiteState.selectedId) {
+  if (!suiteIdValue) {
+    caseState.cases = [];
+    caseState.selectedId = '';
+    renderCases();
+    return;
+  }
+
+  const cases = await requestJson(`/api/test-cases?suiteId=${encodeURIComponent(suiteIdValue)}`);
+  caseState.cases = cases;
+
+  if (caseState.selectedId && !caseState.cases.some((testCase) => testCase.id === caseState.selectedId)) {
+    caseState.selectedId = '';
+  }
+
+  renderCases();
 }
 
 async function saveSuite(event) {
@@ -940,9 +1108,66 @@ async function deleteSelectedSuite() {
     method: 'DELETE',
   });
   suiteState.selectedId = '';
+  caseState.selectedId = '';
+  caseState.cases = [];
   resetSuiteForm();
+  resetCaseForm();
   await loadSuites(projectState.selectedId);
+  renderCases();
   setStatus(t('suite.deleted', 'Suite deleted'), 'passed');
+}
+
+async function saveCase(event) {
+  event.preventDefault();
+
+  if (!suiteState.selectedId) {
+    setStatus(t('case.selectSuiteStatus', 'Select suite'), 'failed');
+    return;
+  }
+
+  const payload = {
+    suiteId: suiteState.selectedId,
+    code: caseCode.value,
+    name: caseName.value,
+    description: caseDescription.value,
+    priority: casePriority.value,
+    enabled: caseEnabled.checked,
+    expectedResult: caseExpectedResult.value,
+  };
+  const editingId = caseId.value;
+  const testCase = await requestJson(editingId ? `/api/test-cases/${encodeURIComponent(editingId)}` : '/api/test-cases', {
+    method: editingId ? 'PUT' : 'POST',
+    body: JSON.stringify(payload),
+  });
+
+  await loadCases(suiteState.selectedId);
+  selectCase(testCase.id);
+  setStatus(t('case.saved', 'Case saved'), 'passed');
+}
+
+async function deleteSelectedCase() {
+  const editingId = caseId.value;
+
+  if (!editingId) {
+    return;
+  }
+
+  const testCase = getSelectedCase();
+  const confirmed = window.confirm(t('case.confirmDelete', 'Delete case "{name}"?', {
+    name: testCase?.name || t('case.noSelected', 'selected case'),
+  }));
+
+  if (!confirmed) {
+    return;
+  }
+
+  await requestJson(`/api/test-cases/${encodeURIComponent(editingId)}`, {
+    method: 'DELETE',
+  });
+  caseState.selectedId = '';
+  resetCaseForm();
+  await loadCases(suiteState.selectedId);
+  setStatus(t('case.deleted', 'Case deleted'), 'passed');
 }
 
 function readTargetConfig() {
@@ -1059,13 +1284,17 @@ async function deleteSelectedProject() {
   projectState.selectedId = '';
   suiteState.selectedId = '';
   suiteState.suites = [];
+  caseState.selectedId = '';
+  caseState.cases = [];
   targetState.selectedId = '';
   targetState.targets = [];
   resetProjectForm();
   resetSuiteForm();
+  resetCaseForm();
   resetTargetForm();
   renderTargets();
   renderSuites();
+  renderCases();
   await loadProjects();
   setStatus(t('projects.deleted', 'Project deleted'), 'passed');
 }
@@ -1294,7 +1523,7 @@ function updateLatest(run) {
   metricDuration.textContent = formatDuration(run.durationMs);
   latestTime.textContent = new Date(run.createdAt).toLocaleString();
   renderGeneratedPlan(run.cases || []);
-  setStatus(run.status === 'passed' ? t('common.passed', 'Passed') : t('common.failed', 'Failed'), run.status);
+  setStatus(statusText(run.status), run.status);
 }
 
 function getRunTitle(run) {
@@ -1379,6 +1608,34 @@ async function loadRuns() {
   renderHistory();
 }
 
+async function pollRunUntilDone(runId) {
+  let run;
+
+  for (let attempt = 0; attempt < 360; attempt += 1) {
+    await sleep(1500);
+    run = await requestJson(`/api/runs/${encodeURIComponent(runId)}`);
+    updateLatest(run);
+
+    if (run.generatedCode) {
+      generatedCode.value = run.generatedCode;
+    }
+
+    await loadRuns();
+
+    if (run.status === 'running') {
+      setProgress('run', 70);
+    } else if (run.status === 'queued') {
+      setProgress('generate', 25);
+    }
+
+    if (isRunDone(run)) {
+      return run;
+    }
+  }
+
+  throw new Error(t('queue.pollTimeout', 'Run is still not finished after the polling timeout.'));
+}
+
 async function generateOnly() {
   setBusy(true, t('common.generating', 'Generating'));
   generateButton.textContent = `${t('common.generating', 'Generating')}...`;
@@ -1416,16 +1673,13 @@ async function generateOnly() {
 }
 
 async function runTest() {
-  setBusy(true, t('common.running', 'Running'));
-  runButton.textContent = `${t('common.running', 'Running')}...`;
+  setBusy(true, t('common.queued', 'Queued'));
+  runButton.textContent = `${t('common.queued', 'Queued')}...`;
   generateButton.textContent = t('common.pleaseWait', 'Please wait');
   refreshButton.textContent = t('common.pleaseWait', 'Please wait');
-  setProgress('generate', 20);
+  setProgress('generate', 15);
 
   try {
-    setProgress('save', 40);
-    setTimeout(() => setProgress('run', 70), 250);
-
     const run = await requestJson('/api/run', {
       method: 'POST',
       body: JSON.stringify({
@@ -1438,20 +1692,19 @@ async function runTest() {
       }),
     });
 
-    if (run.code) {
-      generatedCode.value = run.code;
-    }
-
-    if (run.outputPath) {
-      generatedPath.textContent = run.outputPath;
-    }
-
-    renderGeneratedPlan(run.cases || []);
-
-    setProgress('run', 85);
     updateLatest(run);
-    setProgress('store', 95);
+    setStatus(t('queue.queued', 'Run queued'), 'queued');
+    setProgress('generate', 25);
     await loadRuns();
+    setBusy(false, systemStatus.textContent);
+
+    const finalRun = await pollRunUntilDone(run.runId || run.id);
+
+    if (finalRun.generatedCode) {
+      generatedCode.value = finalRun.generatedCode;
+    }
+
+    renderGeneratedPlan(finalRun.cases || []);
     setProgress('store', 100);
   } catch (error) {
     generatedCode.value = error.message;
@@ -1531,6 +1784,7 @@ form.addEventListener('submit', (event) => {
 
 projectForm.addEventListener('submit', saveProject);
 suiteForm.addEventListener('submit', saveSuite);
+caseForm.addEventListener('submit', saveCase);
 targetForm.addEventListener('submit', saveTarget);
 projectSearch.addEventListener('input', () => {
   projectState.query = projectSearch.value.trim();
@@ -1544,19 +1798,27 @@ suiteSearch.addEventListener('input', () => {
   suiteState.query = suiteSearch.value.trim();
   renderSuites();
 });
+caseSearch.addEventListener('input', () => {
+  caseState.query = caseSearch.value.trim();
+  renderCases();
+});
 newProjectButton.addEventListener('click', () => {
   projectState.selectedId = '';
   suiteState.selectedId = '';
   suiteState.suites = [];
+  caseState.selectedId = '';
+  caseState.cases = [];
   targetState.selectedId = '';
   targetState.targets = [];
   projectSelect.value = '';
   projectSelectedMeta.textContent = t('common.manualUrl', 'Manual URL');
   resetProjectForm();
   resetSuiteForm();
+  resetCaseForm();
   resetTargetForm();
   renderTargets();
   renderSuites();
+  renderCases();
 });
 deleteProjectButton.addEventListener('click', deleteSelectedProject);
 newTargetButton.addEventListener('click', () => {
@@ -1571,14 +1833,24 @@ newTargetButton.addEventListener('click', () => {
 deleteTargetButton.addEventListener('click', deleteSelectedTarget);
 newSuiteButton.addEventListener('click', () => {
   suiteState.selectedId = '';
+  caseState.selectedId = '';
+  caseState.cases = [];
   suiteSelect.value = '';
   suiteSelectedMeta.textContent = projectState.selectedId
     ? t('suite.noSelected', 'No suite selected')
     : t('suite.loadHint', 'Select a project to load suites');
   resetSuiteForm();
+  resetCaseForm();
   renderSuites();
+  renderCases();
 });
 deleteSuiteButton.addEventListener('click', deleteSelectedSuite);
+newCaseButton.addEventListener('click', () => {
+  caseState.selectedId = '';
+  resetCaseForm();
+  renderCases();
+});
+deleteCaseButton.addEventListener('click', deleteSelectedCase);
 projectSelect.addEventListener('change', () => selectProject(projectSelect.value));
 suiteSelect.addEventListener('change', () => selectSuite(suiteSelect.value));
 targetSelect.addEventListener('change', () => selectTarget(targetSelect.value));
@@ -1655,6 +1927,7 @@ async function initApp() {
   updateTargetTypeFields();
   renderTargets();
   renderSuites();
+  renderCases();
   setSuiteType('seo-basic');
   await Promise.all([loadProjects(), loadRuns()]);
 }

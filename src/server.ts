@@ -72,7 +72,7 @@ type TestRun = {
   targetId?: string;
   targetName?: string;
   targetType?: TestTargetType;
-  status: 'passed' | 'failed';
+  status: TestRunStatus;
   createdAt: string;
   durationMs: number;
   summary: {
@@ -89,6 +89,8 @@ type TestRun = {
 };
 
 type TestRunSummary = Omit<TestRun, 'stdout' | 'stderr'>;
+
+type TestRunStatus = 'queued' | 'running' | 'passed' | 'failed' | 'cancelled';
 
 type TestCaseDetail = {
   title: string;
@@ -134,6 +136,14 @@ type RunContext = {
   targetName?: string;
   targetType?: TestTargetType;
   environmentId?: string;
+};
+
+type RunQueueJob = {
+  runId: string;
+  url: string;
+  userRequest: string;
+  auth: AuthInput;
+  context: RunContext;
 };
 
 const execFileAsync = promisify(execFile);
@@ -198,6 +208,8 @@ function toRunSummary(run: TestRun): TestRunSummary {
 
 function dbRunToApiRun(run: any): TestRun {
   const results = Array.isArray(run.results) ? run.results : [];
+  const supportedStatuses: TestRunStatus[] = ['queued', 'running', 'passed', 'failed', 'cancelled'];
+  const status = supportedStatuses.includes(run.status) ? run.status : 'failed';
 
   return {
     id: run.id,
@@ -210,7 +222,7 @@ function dbRunToApiRun(run: any): TestRun {
     targetId: run.targetId || undefined,
     targetName: run.target?.name,
     targetType: run.target?.type,
-    status: run.status === 'passed' ? 'passed' : 'failed',
+    status,
     createdAt: new Date(run.createdAt).toISOString(),
     durationMs: run.durationMs,
     summary: {
@@ -373,6 +385,10 @@ function createSuiteId(): string {
 
 function createTargetId(): string {
   return `target-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function createCaseId(): string {
+  return `case-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
 function normalizeProjectInput(value: Record<string, unknown>, existing?: Project): Project {
@@ -633,6 +649,41 @@ async function normalizeDbTargetInput(value: Record<string, unknown>, existing?:
       ? JSON.stringify(value.config)
       : existing?.config || '{}',
     enabled: typeof value.enabled === 'boolean' ? value.enabled : existing?.enabled ?? true,
+  };
+}
+
+async function normalizeDbTestCaseInput(value: Record<string, unknown>, existing?: any) {
+  const suiteId = normalizeOptionalText(value.suiteId || existing?.suiteId);
+  const code = normalizeOptionalText(value.code || existing?.code).toUpperCase();
+  const name = normalizeOptionalText(value.name);
+
+  if (!suiteId) {
+    throw new Error('Test suite is required for this test case.');
+  }
+
+  if (!code) {
+    throw new Error('Test case code is required.');
+  }
+
+  if (!name) {
+    throw new Error('Test case name is required.');
+  }
+
+  const suite = await prisma.testSuite.findUnique({ where: { id: suiteId } });
+
+  if (!suite) {
+    throw new Error('Test suite not found for this test case.');
+  }
+
+  return {
+    id: existing?.id || createCaseId(),
+    suiteId,
+    code,
+    name,
+    description: normalizeOptionalText(value.description),
+    priority: normalizeOptionalText(value.priority) || existing?.priority || 'medium',
+    enabled: typeof value.enabled === 'boolean' ? value.enabled : existing?.enabled ?? true,
+    expectedResult: normalizeOptionalText(value.expectedResult),
   };
 }
 
@@ -1163,59 +1214,63 @@ async function saveRunToDb(run: TestRun, outputPath: string): Promise<TestRun> {
     'utf-8'
   );
 
-  await prisma.testRun.create({
-    data: {
-      id: run.id,
-      projectId: run.projectId,
-      suiteId: run.suiteId,
-      targetId: run.targetId,
-      url: run.url,
-      status: run.status,
-      total: run.summary.total,
-      passed: run.summary.passed,
-      failed: run.summary.failed,
-      skipped: run.summary.skipped,
-      durationMs: run.durationMs,
-      generatedSpecPath: outputPath,
-      rawOutputPath,
-      userRequest: run.userRequest || '',
-      stdout: run.stdout,
-      stderr: run.stderr,
-      generatedCode: run.generatedCode || '',
-      results: {
-        create: (run.cases || []).map((testCase) => {
-          const caseCode = caseCodeFromTitle(testCase.title);
-          const caseName = caseCode ? testCase.title.replace(caseCode, '').trim() : testCase.title;
+  await prisma.$transaction(async (tx) => {
+    await tx.artifact.deleteMany({ where: { runId: run.id } });
+    await tx.testResult.deleteMany({ where: { runId: run.id } });
+    await tx.testRun.update({
+      where: { id: run.id },
+      data: {
+        projectId: run.projectId,
+        suiteId: run.suiteId,
+        targetId: run.targetId,
+        url: run.url,
+        status: run.status,
+        total: run.summary.total,
+        passed: run.summary.passed,
+        failed: run.summary.failed,
+        skipped: run.summary.skipped,
+        durationMs: run.durationMs,
+        generatedSpecPath: outputPath,
+        rawOutputPath,
+        userRequest: run.userRequest || '',
+        stdout: run.stdout,
+        stderr: run.stderr,
+        generatedCode: run.generatedCode || '',
+        results: {
+          create: (run.cases || []).map((testCase) => {
+            const caseCode = caseCodeFromTitle(testCase.title);
+            const caseName = caseCode ? testCase.title.replace(caseCode, '').trim() : testCase.title;
 
-          return {
-            id: newId('result'),
-            caseCode,
-            caseName,
-            status: testCase.status === 'passed' ? 'passed' : testCase.status === 'skipped' ? 'skipped' : 'failed',
-            durationMs: Math.round(testCase.durationMs || 0),
-            errorMessage: testCase.error || '',
-            stackTrace: testCase.error || '',
-            expectedResult: testCase.expected || '',
-            aiDiagnosis: JSON.stringify({
-              description: testCase.description || '',
-              actual: testCase.actual || '',
-              selector: testCase.selector || '',
-              code: testCase.code || '',
-              steps: testCase.steps || [],
-            }),
-          };
-        }),
+            return {
+              id: newId('result'),
+              caseCode,
+              caseName,
+              status: testCase.status === 'passed' ? 'passed' : testCase.status === 'skipped' ? 'skipped' : 'failed',
+              durationMs: Math.round(testCase.durationMs || 0),
+              errorMessage: testCase.error || '',
+              stackTrace: testCase.error || '',
+              expectedResult: testCase.expected || '',
+              aiDiagnosis: JSON.stringify({
+                description: testCase.description || '',
+                actual: testCase.actual || '',
+                selector: testCase.selector || '',
+                code: testCase.code || '',
+                steps: testCase.steps || [],
+              }),
+            };
+          }),
+        },
+        artifacts: {
+          create: [
+            {
+              id: newId('artifact'),
+              type: 'raw-log',
+              path: rawOutputPath,
+            },
+          ],
+        },
       },
-      artifacts: {
-        create: [
-          {
-            id: newId('artifact'),
-            type: 'raw-log',
-            path: rawOutputPath,
-          },
-        ],
-      },
-    },
+    });
   });
 
   return run;
@@ -1227,7 +1282,8 @@ async function runPlaywright(
   userRequest = '',
   auth?: AuthInput,
   context: RunContext = {},
-  specPath = path.join('tests', 'generated-seo.spec.ts')
+  specPath = path.join('tests', 'generated-seo.spec.ts'),
+  runId = `${Date.now()}`
 ): Promise<TestRun> {
   const startedAt = Date.now();
   const npxCommand = process.platform === 'win32' ? 'npx.cmd' : 'npx';
@@ -1272,7 +1328,7 @@ async function runPlaywright(
   }
 
   const run: TestRun = {
-    id: `${Date.now()}`,
+    id: runId,
     url,
     projectId: context.projectId,
     projectName: context.projectName,
@@ -1294,6 +1350,163 @@ async function runPlaywright(
   };
 
   return run;
+}
+
+async function generateSpecForRun(
+  url: string,
+  userRequest: string,
+  auth: AuthInput,
+  suite?: TestSuite
+): Promise<{
+  outputPath: string;
+  code: string;
+}> {
+  const useStableSeo = !suite || suite.type === 'seo-basic';
+
+  if (!useStableSeo) {
+    return generateSeoTest(url, userRequest, authConfigForGenerator(auth));
+  }
+
+  const enabledCases = suite?.id
+    ? await prisma.testCase.findMany({
+        where: { suiteId: suite.id, enabled: true },
+        orderBy: { code: 'asc' },
+      })
+    : [];
+  const planResult = await generateSeoTestPlan(url, userRequest, enabledCases);
+  await prisma.aIRequestLog.create({
+    data: {
+      id: newId('ai-log'),
+      provider: 'local-ai',
+      model: getConfiguredLocalAIModel(),
+      prompt: planResult.aiPrompt,
+      response: planResult.aiResponse,
+      status: planResult.aiStatus,
+      durationMs: planResult.durationMs,
+    },
+  });
+
+  return writeSeoBasicSpec(planResult.plan, authConfigForGenerator(auth));
+}
+
+async function createQueuedRun(job: RunQueueJob): Promise<TestRun> {
+  const run = await prisma.testRun.create({
+    data: {
+      id: job.runId,
+      projectId: job.context.projectId,
+      suiteId: job.context.suiteId,
+      targetId: job.context.targetId,
+      url: job.url,
+      status: 'queued',
+      userRequest: job.userRequest || '',
+    },
+    include: {
+      project: true,
+      suite: true,
+      target: true,
+      results: true,
+    },
+  });
+
+  return dbRunToApiRun(run);
+}
+
+async function failRun(runId: string, error: unknown) {
+  await prisma.testRun.update({
+    where: { id: runId },
+    data: {
+      status: 'failed',
+      failed: 1,
+      total: 1,
+      stderr: error instanceof Error ? error.stack || error.message : String(error),
+    },
+  });
+}
+
+async function executeRunQueueJob(job: RunQueueJob) {
+  await prisma.testRun.update({
+    where: { id: job.runId },
+    data: { status: 'running' },
+  });
+
+  try {
+    const suite = job.context.suiteId
+      ? ((await prisma.testSuite.findUnique({ where: { id: job.context.suiteId } })) as unknown as TestSuite | undefined)
+      : undefined;
+    const result = await generateSpecForRun(job.url, job.userRequest, job.auth, suite);
+    const run = await runPlaywright(
+      job.url,
+      result.code,
+      job.userRequest,
+      job.auth,
+      job.context,
+      path.relative(rootDir, result.outputPath),
+      job.runId
+    );
+    await saveRunToDb(run, result.outputPath);
+  } catch (error) {
+    await failRun(job.runId, error);
+  }
+}
+
+class InMemoryRunQueue {
+  private queued: RunQueueJob[] = [];
+  private running = new Map<string, RunQueueJob>();
+
+  constructor(
+    private readonly worker: (job: RunQueueJob) => Promise<void>,
+    private readonly concurrency = Number(process.env.RUN_QUEUE_CONCURRENCY || 1)
+  ) {}
+
+  enqueue(job: RunQueueJob) {
+    this.queued.push(job);
+    this.drain();
+  }
+
+  status() {
+    return {
+      queued: this.queued.length,
+      running: this.running.size,
+      count: this.queued.length + this.running.size,
+      concurrency: this.concurrency,
+    };
+  }
+
+  private drain() {
+    while (this.running.size < this.concurrency && this.queued.length > 0) {
+      const job = this.queued.shift();
+
+      if (!job) {
+        return;
+      }
+
+      this.running.set(job.runId, job);
+      this.worker(job)
+        .catch((error) => {
+          console.error('[queue] Run job failed unexpectedly.', error);
+        })
+        .finally(() => {
+          this.running.delete(job.runId);
+          this.drain();
+        });
+    }
+  }
+}
+
+const runQueue = new InMemoryRunQueue(executeRunQueueJob);
+
+async function cancelInterruptedRuns() {
+  await prisma.testRun.updateMany({
+    where: {
+      status: {
+        in: ['queued', 'running'],
+      },
+    },
+    data: {
+      status: 'cancelled',
+      stderr: 'Run was interrupted because the server restarted before the in-memory queue finished it.',
+    },
+  });
 }
 
 function serveStatic(request: http.IncomingMessage, response: http.ServerResponse) {
@@ -1429,6 +1642,58 @@ const server = http.createServer(async (request, response) => {
       }
     }
 
+    if (request.method === 'GET' && requestUrl.pathname === '/api/test-cases') {
+      const suiteId = requestUrl.searchParams.get('suiteId');
+
+      if (!suiteId) {
+        sendError(response, 400, 'suiteId is required');
+        return;
+      }
+
+      const cases = await prisma.testCase.findMany({
+        where: { suiteId },
+        orderBy: { code: 'asc' },
+      });
+
+      sendJson(response, 200, cases);
+      return;
+    }
+
+    if (request.method === 'POST' && requestUrl.pathname === '/api/test-cases') {
+      const body = await readBody(request);
+      const caseInput = await normalizeDbTestCaseInput(body);
+      const testCase = await prisma.testCase.create({ data: caseInput });
+      sendJson(response, 201, testCase);
+      return;
+    }
+
+    if (requestUrl.pathname.startsWith('/api/test-cases/')) {
+      const id = decodeURIComponent(requestUrl.pathname.replace('/api/test-cases/', ''));
+      const existingCase = await prisma.testCase.findUnique({ where: { id } });
+
+      if (!existingCase) {
+        sendError(response, 404, 'Test case not found');
+        return;
+      }
+
+      if (request.method === 'PUT') {
+        const body = await readBody(request);
+        const caseInput = await normalizeDbTestCaseInput(body, existingCase);
+        const testCase = await prisma.testCase.update({
+          where: { id },
+          data: caseInput,
+        });
+        sendJson(response, 200, testCase);
+        return;
+      }
+
+      if (request.method === 'DELETE') {
+        const deletedCase = await prisma.testCase.delete({ where: { id } });
+        sendJson(response, 200, deletedCase);
+        return;
+      }
+    }
+
     if (request.method === 'GET' && requestUrl.pathname === '/api/test-targets') {
       const projectId = requestUrl.searchParams.get('projectId');
       const targets = await prisma.testTarget.findMany({
@@ -1475,6 +1740,11 @@ const server = http.createServer(async (request, response) => {
       }
     }
 
+    if (request.method === 'GET' && requestUrl.pathname === '/api/queue/status') {
+      sendJson(response, 200, runQueue.status());
+      return;
+    }
+
     if (request.method === 'GET' && requestUrl.pathname === '/api/runs') {
       const runs = await prisma.testRun.findMany({
         take: 50,
@@ -1518,30 +1788,7 @@ const server = http.createServer(async (request, response) => {
       const url = resolveRunUrl(body.url, project, target);
       const userRequest = buildSuiteUserRequest(typeof body.userRequest === 'string' ? body.userRequest : '', suite);
       const auth = normalizeAuth(body.auth);
-      const useStableSeo = !suite || suite.type === 'seo-basic';
-      const result = useStableSeo
-        ? await (async () => {
-            const enabledCases = suite?.id
-              ? await prisma.testCase.findMany({
-                  where: { suiteId: suite.id, enabled: true },
-                  orderBy: { code: 'asc' },
-                })
-              : [];
-            const planResult = await generateSeoTestPlan(url, userRequest, enabledCases);
-            await prisma.aIRequestLog.create({
-              data: {
-                id: newId('ai-log'),
-                provider: 'local-ai',
-                model: getConfiguredLocalAIModel(),
-                prompt: planResult.aiPrompt,
-                response: planResult.aiResponse,
-                status: planResult.aiStatus,
-                durationMs: planResult.durationMs,
-              },
-            });
-            return writeSeoBasicSpec(planResult.plan, authConfigForGenerator(auth));
-          })()
-        : await generateSeoTest(url, userRequest, authConfigForGenerator(auth));
+      const result = await generateSpecForRun(url, userRequest, auth, suite);
 
       sendJson(response, 200, {
         url,
@@ -1566,37 +1813,12 @@ const server = http.createServer(async (request, response) => {
       const url = resolveRunUrl(body.url, project, target);
       const userRequest = buildSuiteUserRequest(typeof body.userRequest === 'string' ? body.userRequest : '', suite);
       const auth = normalizeAuth(body.auth);
-      const useStableSeo = !suite || suite.type === 'seo-basic';
-      const result = useStableSeo
-        ? await (async () => {
-            const enabledCases = suite?.id
-              ? await prisma.testCase.findMany({
-                  where: { suiteId: suite.id, enabled: true },
-                  orderBy: { code: 'asc' },
-                })
-              : [];
-            const planResult = await generateSeoTestPlan(url, userRequest, enabledCases);
-            await prisma.aIRequestLog.create({
-              data: {
-                id: newId('ai-log'),
-                provider: 'local-ai',
-                model: getConfiguredLocalAIModel(),
-                prompt: planResult.aiPrompt,
-                response: planResult.aiResponse,
-                status: planResult.aiStatus,
-                durationMs: planResult.durationMs,
-              },
-            });
-            return writeSeoBasicSpec(planResult.plan, authConfigForGenerator(auth));
-          })()
-        : await generateSeoTest(url, userRequest, authConfigForGenerator(auth));
-
-      const run = await runPlaywright(
+      const job: RunQueueJob = {
+        runId: newId('run'),
         url,
-        result.code,
         userRequest,
         auth,
-        {
+        context: {
           projectId: project?.id,
           projectName: project?.name,
           suiteId: suite?.id,
@@ -1606,14 +1828,14 @@ const server = http.createServer(async (request, response) => {
           targetName: target?.name,
           targetType: target?.type,
         },
-        path.relative(rootDir, result.outputPath)
-      );
-      await saveRunToDb(run, result.outputPath);
+      };
+      const run = await createQueuedRun(job);
+      runQueue.enqueue(job);
 
       sendJson(response, 200, {
         ...toRunSummary(run),
-        code: result.code,
-        outputPath: result.outputPath,
+        runId: run.id,
+        queue: runQueue.status(),
       });
       return;
     }
@@ -1631,6 +1853,7 @@ const server = http.createServer(async (request, response) => {
 
 ensureStorage();
 ensureDefaultData()
+  .then(cancelInterruptedRuns)
   .then(() => {
     server.listen(port, () => {
       console.log(`Passmark AI web UI: http://localhost:${port}`);
