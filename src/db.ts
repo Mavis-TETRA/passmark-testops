@@ -8,6 +8,7 @@ export const prisma = new PrismaClient({
 const DEFAULT_PROJECT_ID = 'project-default-seo';
 const DEFAULT_ENVIRONMENT_ID = 'environment-default-production';
 const DEFAULT_SUITE_ID = 'suite-default-basic-seo';
+const DEFAULT_TARGET_ID = 'target-default-website';
 
 const SEO_BASIC_CONFIG = JSON.stringify({
   checkTitle: true,
@@ -84,6 +85,35 @@ async function ensureDefaultEnvironmentForProject(project: { id: string; baseUrl
   });
 }
 
+export async function createDefaultTargetForProject(project: { id: string; baseUrl: string }) {
+  const existingTarget = await prisma.testTarget.findFirst({
+    where: {
+      projectId: project.id,
+      type: {
+        in: ['web-url', 'local-web'],
+      },
+    },
+    orderBy: { createdAt: 'asc' },
+  });
+
+  if (existingTarget) {
+    return existingTarget;
+  }
+
+  return prisma.testTarget.create({
+    data: {
+      id: project.id === DEFAULT_PROJECT_ID ? DEFAULT_TARGET_ID : createId('target'),
+      projectId: project.id,
+      name: 'Default Website',
+      type: 'web-url',
+      url: project.baseUrl,
+      localPath: '',
+      config: '{}',
+      enabled: true,
+    },
+  });
+}
+
 export async function ensureDefaultData() {
   try {
     await prisma.$connect();
@@ -95,6 +125,7 @@ export async function ensureDefaultData() {
     if (existingProjects.length > 0) {
       for (const project of existingProjects) {
         await ensureDefaultEnvironmentForProject(project);
+        await createDefaultTargetForProject(project);
         await createDefaultSuiteForProject(project.id);
       }
       return;
@@ -130,6 +161,29 @@ export async function ensureDefaultData() {
         authType: 'none',
         authConfig: '{}',
         customHeaders: '{}',
+      },
+    });
+
+    await prisma.testTarget.upsert({
+      where: { id: DEFAULT_TARGET_ID },
+      update: {
+        projectId: project.id,
+        name: 'Default Website',
+        type: 'web-url',
+        url: project.baseUrl,
+        localPath: '',
+        config: '{}',
+        enabled: true,
+      },
+      create: {
+        id: DEFAULT_TARGET_ID,
+        projectId: project.id,
+        name: 'Default Website',
+        type: 'web-url',
+        url: project.baseUrl,
+        localPath: '',
+        config: '{}',
+        enabled: true,
       },
     });
 

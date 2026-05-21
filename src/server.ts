@@ -5,7 +5,7 @@ import http from 'http';
 import path from 'path';
 import { promisify } from 'util';
 import { AuthConfig, generateSeoTest } from '../scripts/generate-seo-test';
-import { createDefaultSuiteForProject, ensureDefaultData, newId, prisma } from './db';
+import { createDefaultSuiteForProject, createDefaultTargetForProject, ensureDefaultData, newId, prisma } from './db';
 import { getConfiguredLocalAIModel } from './local-ai-client';
 import { generateSeoTestPlan } from './seo-test-plan';
 import { writeSeoBasicSpec } from './seo-template-renderer';
@@ -34,12 +34,27 @@ type TestSuiteType =
   | 'accessibility'
   | 'custom';
 
+type TestTargetType = 'web-url' | 'local-web' | 'source-code' | 'api';
+
 type TestSuite = {
   id: string;
   projectId: string;
   name: string;
   type: TestSuiteType;
   description: string;
+  config?: Record<string, unknown>;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type TestTarget = {
+  id: string;
+  projectId: string;
+  name: string;
+  type: TestTargetType;
+  url: string;
+  localPath: string;
   config?: Record<string, unknown>;
   enabled: boolean;
   createdAt: string;
@@ -54,6 +69,9 @@ type TestRun = {
   suiteId?: string;
   suiteName?: string;
   suiteType?: TestSuiteType;
+  targetId?: string;
+  targetName?: string;
+  targetType?: TestTargetType;
   status: 'passed' | 'failed';
   createdAt: string;
   durationMs: number;
@@ -112,6 +130,9 @@ type RunContext = {
   suiteId?: string;
   suiteName?: string;
   suiteType?: TestSuiteType;
+  targetId?: string;
+  targetName?: string;
+  targetType?: TestTargetType;
   environmentId?: string;
 };
 
@@ -186,6 +207,9 @@ function dbRunToApiRun(run: any): TestRun {
     suiteId: run.suiteId || undefined,
     suiteName: run.suite?.name,
     suiteType: run.suite?.type,
+    targetId: run.targetId || undefined,
+    targetName: run.target?.name,
+    targetType: run.target?.type,
     status: run.status === 'passed' ? 'passed' : 'failed',
     createdAt: new Date(run.createdAt).toISOString(),
     durationMs: run.durationMs,
@@ -234,6 +258,13 @@ function dbSuiteToApiSuite(suite: any): Record<string, unknown> {
   return {
     ...suite,
     config: parseJsonText(suite.config),
+  };
+}
+
+function dbTargetToApiTarget(target: any): Record<string, unknown> {
+  return {
+    ...target,
+    config: parseJsonText(target.config),
   };
 }
 
@@ -324,12 +355,24 @@ function normalizeSuiteType(value: unknown): TestSuiteType {
     : 'seo-basic';
 }
 
+function normalizeTargetType(value: unknown): TestTargetType {
+  const supportedTypes: TestTargetType[] = ['web-url', 'local-web', 'source-code', 'api'];
+
+  return supportedTypes.includes(value as TestTargetType)
+    ? (value as TestTargetType)
+    : 'web-url';
+}
+
 function createProjectId(): string {
   return `project-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
 function createSuiteId(): string {
   return `suite-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function createTargetId(): string {
+  return `target-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
 function normalizeProjectInput(value: Record<string, unknown>, existing?: Project): Project {
@@ -416,6 +459,81 @@ async function resolveProjectSuiteContext(projectIdValue: unknown, suiteIdValue:
   return { project, suite };
 }
 
+async function resolveProjectSuiteTargetContext(
+  projectIdValue: unknown,
+  suiteIdValue: unknown,
+  targetIdValue: unknown
+): Promise<{
+  project?: Project;
+  suite?: TestSuite;
+  target?: TestTarget;
+}> {
+  const projectId = normalizeOptionalText(projectIdValue);
+  const suiteId = normalizeOptionalText(suiteIdValue);
+  const targetId = normalizeOptionalText(targetIdValue);
+  const suite = suiteId
+    ? ((await prisma.testSuite.findUnique({ where: { id: suiteId } })) as unknown as TestSuite | undefined)
+    : undefined;
+  const target = targetId
+    ? ((await prisma.testTarget.findUnique({ where: { id: targetId } })) as unknown as TestTarget | undefined)
+    : undefined;
+  const project = suite
+    ? ((await prisma.project.findUnique({ where: { id: suite.projectId } })) as unknown as Project | undefined)
+    : target
+      ? ((await prisma.project.findUnique({ where: { id: target.projectId } })) as unknown as Project | undefined)
+      : projectId
+        ? ((await prisma.project.findUnique({ where: { id: projectId } })) as unknown as Project | undefined)
+        : undefined;
+
+  if (suiteId && !suite) {
+    throw new Error('Test suite not found.');
+  }
+
+  if (targetId && !target) {
+    throw new Error('Test target not found.');
+  }
+
+  if (suite && !suite.enabled) {
+    throw new Error('Selected test suite is disabled.');
+  }
+
+  if (target && !target.enabled) {
+    throw new Error('Selected test target is disabled.');
+  }
+
+  if (suite && projectId && suite.projectId !== projectId) {
+    throw new Error('Selected test suite does not belong to this project.');
+  }
+
+  if (target && projectId && target.projectId !== projectId) {
+    throw new Error('Selected test target does not belong to this project.');
+  }
+
+  if (suite && target && suite.projectId !== target.projectId) {
+    throw new Error('Selected test target does not belong to the same project as this suite.');
+  }
+
+  return { project, suite, target };
+}
+
+function resolveRunUrl(urlValue: unknown, project?: Project, target?: TestTarget): string {
+  if (target && ['web-url', 'local-web', 'api'].includes(target.type) && target.url) {
+    return normalizeUrl(target.url);
+  }
+
+  const bodyUrl = normalizeOptionalText(urlValue);
+
+  if (bodyUrl) {
+    return normalizeUrl(bodyUrl);
+  }
+
+  if (project?.baseUrl) {
+    return normalizeUrl(project.baseUrl);
+  }
+
+  throw new Error('URL is required.');
+}
+
 function buildSuiteUserRequest(userRequest: string, suite?: TestSuite): string {
   const request = userRequest.trim();
 
@@ -464,6 +582,53 @@ function normalizeDbSuiteInput(value: Record<string, unknown>, existing?: any) {
     name,
     type: normalizeSuiteType(value.type),
     description: normalizeOptionalText(value.description),
+    config: value.config && typeof value.config === 'object'
+      ? JSON.stringify(value.config)
+      : existing?.config || '{}',
+    enabled: typeof value.enabled === 'boolean' ? value.enabled : existing?.enabled ?? true,
+  };
+}
+
+async function normalizeDbTargetInput(value: Record<string, unknown>, existing?: any) {
+  const name = normalizeOptionalText(value.name);
+  const projectId = normalizeOptionalText(value.projectId || existing?.projectId);
+  const type = normalizeTargetType(value.type || existing?.type);
+  const url = normalizeOptionalText(value.url);
+  const localPath = normalizeOptionalText(value.localPath);
+
+  if (!name) {
+    throw new Error('Test target name is required.');
+  }
+
+  if (!projectId) {
+    throw new Error('Project is required for this test target.');
+  }
+
+  const project = await prisma.project.findUnique({ where: { id: projectId } });
+
+  if (!project) {
+    throw new Error('Project not found for this test target.');
+  }
+
+  if ((type === 'web-url' || type === 'local-web' || type === 'api') && !url) {
+    throw new Error('URL is required for this target type.');
+  }
+
+  if ((type === 'web-url' || type === 'local-web' || type === 'api') && url) {
+    normalizeUrl(url);
+  }
+
+  if (type === 'source-code' && !localPath) {
+    throw new Error('Local path is required for source-code targets.');
+  }
+
+  return {
+    id: existing?.id || createTargetId(),
+    projectId,
+    name,
+    type,
+    url: url ? normalizeUrl(url) : '',
+    localPath,
     config: value.config && typeof value.config === 'object'
       ? JSON.stringify(value.config)
       : existing?.config || '{}',
@@ -1003,6 +1168,7 @@ async function saveRunToDb(run: TestRun, outputPath: string): Promise<TestRun> {
       id: run.id,
       projectId: run.projectId,
       suiteId: run.suiteId,
+      targetId: run.targetId,
       url: run.url,
       status: run.status,
       total: run.summary.total,
@@ -1113,6 +1279,9 @@ async function runPlaywright(
     suiteId: context.suiteId,
     suiteName: context.suiteName,
     suiteType: context.suiteType,
+    targetId: context.targetId,
+    targetName: context.targetName,
+    targetType: context.targetType,
     status,
     createdAt: new Date().toISOString(),
     durationMs: Date.now() - startedAt,
@@ -1180,6 +1349,7 @@ const server = http.createServer(async (request, response) => {
           customHeaders: '{}',
         },
       });
+      await createDefaultTargetForProject(project);
       await createDefaultSuiteForProject(project.id);
       sendJson(response, 201, project);
       return;
@@ -1259,6 +1429,52 @@ const server = http.createServer(async (request, response) => {
       }
     }
 
+    if (request.method === 'GET' && requestUrl.pathname === '/api/test-targets') {
+      const projectId = requestUrl.searchParams.get('projectId');
+      const targets = await prisma.testTarget.findMany({
+        where: projectId ? { projectId } : undefined,
+        orderBy: { createdAt: 'desc' },
+      });
+
+      sendJson(response, 200, targets.map(dbTargetToApiTarget));
+      return;
+    }
+
+    if (request.method === 'POST' && requestUrl.pathname === '/api/test-targets') {
+      const body = await readBody(request);
+      const targetInput = await normalizeDbTargetInput(body);
+      const target = await prisma.testTarget.create({ data: targetInput });
+      sendJson(response, 201, dbTargetToApiTarget(target));
+      return;
+    }
+
+    if (requestUrl.pathname.startsWith('/api/test-targets/')) {
+      const id = decodeURIComponent(requestUrl.pathname.replace('/api/test-targets/', ''));
+      const existingTarget = await prisma.testTarget.findUnique({ where: { id } });
+
+      if (!existingTarget) {
+        sendError(response, 404, 'Test target not found');
+        return;
+      }
+
+      if (request.method === 'PUT') {
+        const body = await readBody(request);
+        const targetInput = await normalizeDbTargetInput(body, existingTarget);
+        const target = await prisma.testTarget.update({
+          where: { id },
+          data: targetInput,
+        });
+        sendJson(response, 200, dbTargetToApiTarget(target));
+        return;
+      }
+
+      if (request.method === 'DELETE') {
+        const deletedTarget = await prisma.testTarget.delete({ where: { id } });
+        sendJson(response, 200, dbTargetToApiTarget(deletedTarget));
+        return;
+      }
+    }
+
     if (request.method === 'GET' && requestUrl.pathname === '/api/runs') {
       const runs = await prisma.testRun.findMany({
         take: 50,
@@ -1266,6 +1482,7 @@ const server = http.createServer(async (request, response) => {
         include: {
           project: true,
           suite: true,
+          target: true,
           results: { orderBy: { caseCode: 'asc' } },
         },
       });
@@ -1280,6 +1497,7 @@ const server = http.createServer(async (request, response) => {
         include: {
           project: true,
           suite: true,
+          target: true,
           results: { orderBy: { caseCode: 'asc' } },
           artifacts: true,
         },
@@ -1296,8 +1514,8 @@ const server = http.createServer(async (request, response) => {
 
     if (request.method === 'POST' && requestUrl.pathname === '/api/generate') {
       const body = await readBody(request);
-      const url = normalizeUrl(body.url);
-      const { project, suite } = await resolveProjectSuiteContext(body.projectId, body.suiteId);
+      const { project, suite, target } = await resolveProjectSuiteTargetContext(body.projectId, body.suiteId, body.targetId);
+      const url = resolveRunUrl(body.url, project, target);
       const userRequest = buildSuiteUserRequest(typeof body.userRequest === 'string' ? body.userRequest : '', suite);
       const auth = normalizeAuth(body.auth);
       const useStableSeo = !suite || suite.type === 'seo-basic';
@@ -1332,6 +1550,9 @@ const server = http.createServer(async (request, response) => {
         suiteId: suite?.id,
         suiteName: suite?.name,
         suiteType: suite?.type,
+        targetId: target?.id,
+        targetName: target?.name,
+        targetType: target?.type,
         outputPath: result.outputPath,
         code: result.code,
         cases: previewGeneratedCases(result.code, userRequest),
@@ -1341,8 +1562,8 @@ const server = http.createServer(async (request, response) => {
 
     if (request.method === 'POST' && requestUrl.pathname === '/api/run') {
       const body = await readBody(request);
-      const url = normalizeUrl(body.url);
-      const { project, suite } = await resolveProjectSuiteContext(body.projectId, body.suiteId);
+      const { project, suite, target } = await resolveProjectSuiteTargetContext(body.projectId, body.suiteId, body.targetId);
+      const url = resolveRunUrl(body.url, project, target);
       const userRequest = buildSuiteUserRequest(typeof body.userRequest === 'string' ? body.userRequest : '', suite);
       const auth = normalizeAuth(body.auth);
       const useStableSeo = !suite || suite.type === 'seo-basic';
@@ -1381,6 +1602,9 @@ const server = http.createServer(async (request, response) => {
           suiteId: suite?.id,
           suiteName: suite?.name,
           suiteType: suite?.type,
+          targetId: target?.id,
+          targetName: target?.name,
+          targetType: target?.type,
         },
         path.relative(rootDir, result.outputPath)
       );

@@ -27,6 +27,23 @@ const suiteDescription = document.querySelector('#suiteDescription');
 const suiteEnabled = document.querySelector('#suiteEnabled');
 const newSuiteButton = document.querySelector('#newSuiteButton');
 const deleteSuiteButton = document.querySelector('#deleteSuiteButton');
+const targetForm = document.querySelector('#targetForm');
+const targetList = document.querySelector('#targetList');
+const targetSearch = document.querySelector('#targetSearch');
+const targetCount = document.querySelector('#targetCount');
+const targetSelect = document.querySelector('#targetSelect');
+const targetSelectedMeta = document.querySelector('#targetSelectedMeta');
+const targetId = document.querySelector('#targetId');
+const targetName = document.querySelector('#targetName');
+const targetType = document.querySelector('#targetType');
+const targetUrl = document.querySelector('#targetUrl');
+const targetLocalPath = document.querySelector('#targetLocalPath');
+const targetConfig = document.querySelector('#targetConfig');
+const targetEnabled = document.querySelector('#targetEnabled');
+const targetUrlField = document.querySelector('.target-url-field');
+const targetPathField = document.querySelector('.target-path-field');
+const newTargetButton = document.querySelector('#newTargetButton');
+const deleteTargetButton = document.querySelector('#deleteTargetButton');
 const siteUrl = document.querySelector('#siteUrl');
 const runButton = document.querySelector('#runButton');
 const generateButton = document.querySelector('#generateButton');
@@ -94,6 +111,11 @@ const projectState = {
 };
 const suiteState = {
   suites: [],
+  selectedId: '',
+  query: '',
+};
+const targetState = {
+  targets: [],
   selectedId: '',
   query: '',
 };
@@ -220,6 +242,7 @@ function applyTranslations() {
 function refreshLocalizedUi() {
   applyTranslations();
   renderProjects();
+  renderTargets();
   renderSuites();
   renderHistory();
   renderSuiteConfig(readSuiteConfig());
@@ -379,6 +402,41 @@ function getSelectedSuite() {
   return suiteState.suites.find((suite) => suite.id === suiteState.selectedId);
 }
 
+function getSelectedTarget() {
+  return targetState.targets.find((target) => target.id === targetState.selectedId);
+}
+
+function targetTypeLabel(type) {
+  return t(`target.type.${type === 'web-url' ? 'webUrl' : type === 'local-web' ? 'localWeb' : type === 'source-code' ? 'sourceCode' : 'api'}`, type);
+}
+
+function targetUsesUrl(target) {
+  return target && ['web-url', 'local-web', 'api'].includes(target.type);
+}
+
+function applySelectedTargetUrl() {
+  const project = getSelectedProject();
+  const target = getSelectedTarget();
+
+  if (targetUsesUrl(target) && target.url) {
+    siteUrl.value = target.url;
+    targetSelectedMeta.textContent = `${targetTypeLabel(target.type)} | ${target.url}`;
+    return;
+  }
+
+  if (target?.type === 'source-code') {
+    targetSelectedMeta.textContent = `${targetTypeLabel(target.type)} | ${target.localPath || t('target.noPath', 'No local path')}`;
+  } else {
+    targetSelectedMeta.textContent = project
+      ? t('target.fallbackProjectUrl', 'Fallback to project base URL')
+      : t('target.noSelected', 'No target selected');
+  }
+
+  if (project?.baseUrl) {
+    siteUrl.value = project.baseUrl;
+  }
+}
+
 function readSuiteConfig() {
   const config = {};
 
@@ -474,6 +532,18 @@ function resetSuiteForm() {
   setSuiteType('seo-basic');
 }
 
+function resetTargetForm() {
+  targetId.value = '';
+  targetName.value = '';
+  targetType.value = 'web-url';
+  targetUrl.value = '';
+  targetLocalPath.value = '';
+  targetConfig.value = '{}';
+  targetEnabled.checked = true;
+  deleteTargetButton.disabled = true;
+  updateTargetTypeFields();
+}
+
 function fillSuiteForm(suite) {
   suiteId.value = suite.id;
   suiteName.value = suite.name;
@@ -481,6 +551,26 @@ function fillSuiteForm(suite) {
   suiteEnabled.checked = Boolean(suite.enabled);
   deleteSuiteButton.disabled = false;
   setSuiteType(suite.type || 'seo-basic', suite.config || {});
+}
+
+function fillTargetForm(target) {
+  targetId.value = target.id;
+  targetName.value = target.name;
+  targetType.value = target.type || 'web-url';
+  targetUrl.value = target.url || '';
+  targetLocalPath.value = target.localPath || '';
+  targetConfig.value = JSON.stringify(target.config || {}, null, 2);
+  targetEnabled.checked = Boolean(target.enabled);
+  deleteTargetButton.disabled = false;
+  updateTargetTypeFields();
+}
+
+function updateTargetTypeFields() {
+  const isSourceCode = targetType.value === 'source-code';
+  targetUrlField.hidden = isSourceCode;
+  targetPathField.hidden = !isSourceCode;
+  targetUrl.required = !isSourceCode;
+  targetLocalPath.required = isSourceCode;
 }
 
 function fillProjectForm(project) {
@@ -496,13 +586,17 @@ function selectProject(projectIdValue) {
   projectState.selectedId = projectIdValue || '';
   projectSelect.value = projectState.selectedId;
   suiteState.selectedId = '';
+  targetState.selectedId = '';
   resetSuiteForm();
+  resetTargetForm();
 
   const project = getSelectedProject();
 
   if (!project) {
     projectSelectedMeta.textContent = t('common.manualUrl', 'Manual URL');
     suiteState.suites = [];
+    targetState.targets = [];
+    renderTargets();
     renderSuites();
     resetProjectForm();
     return;
@@ -514,6 +608,10 @@ function selectProject(projectIdValue) {
   projectSelectedMeta.textContent = `${project.environment.toUpperCase()} | ${project.baseUrl}`;
   renderProjects();
   loadSuites(project.id).catch((error) => {
+    generatedCode.value = error.message;
+    setStatus(t('common.error', 'Error'), 'failed');
+  });
+  loadTargets(project.id).catch((error) => {
     generatedCode.value = error.message;
     setStatus(t('common.error', 'Error'), 'failed');
   });
@@ -583,6 +681,108 @@ async function loadProjects() {
   const projects = await requestJson('/api/projects');
   projectState.projects = projects;
   renderProjects();
+}
+
+function renderTargets() {
+  targetList.innerHTML = '';
+  targetSelect.innerHTML = `<option value="">${escapeHtml(t('target.noSelected', 'No target selected'))}</option>`;
+  targetCount.textContent = t('target.count', '{count} {item}', {
+    count: targetState.targets.length,
+    item: targetState.targets.length === 1
+      ? t('target.itemSingular', 'target')
+      : t('target.itemPlural', 'targets'),
+  });
+
+  const project = getSelectedProject();
+
+  if (!project) {
+    targetList.innerHTML = `<p class="empty">${escapeHtml(t('target.emptyProject', 'Select a project to manage targets.'))}</p>`;
+    targetSelectedMeta.textContent = t('target.loadHint', 'Select a project to load targets');
+    return;
+  }
+
+  if (!targetState.targets.length) {
+    targetList.innerHTML = `<p class="empty">${escapeHtml(t('target.empty', 'No targets for this project yet.'))}</p>`;
+    targetSelectedMeta.textContent = t('target.fallbackProjectUrl', 'Fallback to project base URL');
+    return;
+  }
+
+  const query = targetState.query.toLowerCase();
+  const visibleTargets = targetState.targets.filter((target) => {
+    const haystack = `${target.name} ${target.type} ${target.url} ${target.localPath} ${target.enabled ? 'enabled' : 'disabled'}`.toLowerCase();
+    return haystack.includes(query);
+  });
+
+  if (!visibleTargets.length) {
+    targetList.innerHTML = `<p class="empty">${escapeHtml(t('target.emptySearch', 'No targets match this search.'))}</p>`;
+  }
+
+  for (const target of targetState.targets) {
+    const option = document.createElement('option');
+    option.value = target.id;
+    option.textContent = `${target.name} (${targetTypeLabel(target.type)})${target.enabled ? '' : ` - ${t('common.disabled', 'disabled')}`}`;
+    option.disabled = !target.enabled;
+    targetSelect.appendChild(option);
+  }
+
+  for (const target of visibleTargets) {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = `target-item${target.id === targetState.selectedId ? ' active' : ''}${target.enabled ? '' : ' disabled'}`;
+    item.innerHTML = `
+      <span>
+        <strong>${escapeHtml(target.name)}</strong>
+        <small>${escapeHtml(target.url || target.localPath || target.type)}</small>
+      </span>
+      <span>
+        <span class="target-type">${escapeHtml(targetTypeLabel(target.type))}</span>
+        <small class="target-state">${target.enabled ? escapeHtml(t('common.enabled', 'enabled')) : escapeHtml(t('common.disabled', 'disabled'))}</small>
+      </span>
+    `;
+    item.addEventListener('click', () => selectTarget(target.id));
+    targetList.appendChild(item);
+  }
+
+  if (targetState.selectedId && !getSelectedTarget()) {
+    targetState.selectedId = '';
+  }
+
+  targetSelect.value = targetState.selectedId;
+  applySelectedTargetUrl();
+}
+
+function selectTarget(targetIdValue) {
+  targetState.selectedId = targetIdValue || '';
+  targetSelect.value = targetState.selectedId;
+
+  const target = getSelectedTarget();
+
+  if (!target) {
+    resetTargetForm();
+    renderTargets();
+    return;
+  }
+
+  fillTargetForm(target);
+  renderTargets();
+}
+
+async function loadTargets(projectIdValue = projectState.selectedId) {
+  if (!projectIdValue) {
+    targetState.targets = [];
+    targetState.selectedId = '';
+    renderTargets();
+    return;
+  }
+
+  const targets = await requestJson(`/api/test-targets?projectId=${encodeURIComponent(projectIdValue)}`);
+  targetState.targets = targets;
+
+  if (targetState.selectedId && !targetState.targets.some((target) => target.id === targetState.selectedId)) {
+    targetState.selectedId = '';
+  }
+
+  renderTargets();
 }
 
 function renderSuites() {
@@ -745,6 +945,78 @@ async function deleteSelectedSuite() {
   setStatus(t('suite.deleted', 'Suite deleted'), 'passed');
 }
 
+function readTargetConfig() {
+  const text = targetConfig.value.trim();
+
+  if (!text) {
+    return {};
+  }
+
+  return JSON.parse(text);
+}
+
+async function saveTarget(event) {
+  event.preventDefault();
+
+  if (!projectState.selectedId) {
+    setStatus(t('target.selectProjectStatus', 'Select project'), 'failed');
+    return;
+  }
+
+  let config = {};
+
+  try {
+    config = readTargetConfig();
+  } catch {
+    setStatus(t('target.invalidConfig', 'Target config must be valid JSON'), 'failed');
+    return;
+  }
+
+  const payload = {
+    projectId: projectState.selectedId,
+    name: targetName.value,
+    type: targetType.value,
+    url: targetUrl.value,
+    localPath: targetLocalPath.value,
+    config,
+    enabled: targetEnabled.checked,
+  };
+  const editingId = targetId.value;
+  const target = await requestJson(editingId ? `/api/test-targets/${encodeURIComponent(editingId)}` : '/api/test-targets', {
+    method: editingId ? 'PUT' : 'POST',
+    body: JSON.stringify(payload),
+  });
+
+  await loadTargets(projectState.selectedId);
+  selectTarget(target.id);
+  setStatus(t('target.saved', 'Target saved'), 'passed');
+}
+
+async function deleteSelectedTarget() {
+  const editingId = targetId.value;
+
+  if (!editingId) {
+    return;
+  }
+
+  const target = getSelectedTarget();
+  const confirmed = window.confirm(t('target.confirmDelete', 'Delete target "{name}"?', {
+    name: target?.name || t('target.noSelected', 'selected target'),
+  }));
+
+  if (!confirmed) {
+    return;
+  }
+
+  await requestJson(`/api/test-targets/${encodeURIComponent(editingId)}`, {
+    method: 'DELETE',
+  });
+  targetState.selectedId = '';
+  resetTargetForm();
+  await loadTargets(projectState.selectedId);
+  setStatus(t('target.deleted', 'Target deleted'), 'passed');
+}
+
 async function saveProject(event) {
   event.preventDefault();
 
@@ -787,8 +1059,12 @@ async function deleteSelectedProject() {
   projectState.selectedId = '';
   suiteState.selectedId = '';
   suiteState.suites = [];
+  targetState.selectedId = '';
+  targetState.targets = [];
   resetProjectForm();
   resetSuiteForm();
+  resetTargetForm();
+  renderTargets();
   renderSuites();
   await loadProjects();
   setStatus(t('projects.deleted', 'Project deleted'), 'passed');
@@ -938,6 +1214,7 @@ function renderCaseSteps(testCase) {
 
 function renderGeneratedPlan(cases = []) {
   generatedPlan.innerHTML = '';
+  generatedPlan.classList.toggle('is-empty', !cases.length);
 
   if (!cases.length) {
     generatedPlan.innerHTML = `
@@ -1116,6 +1393,7 @@ async function generateOnly() {
         url: siteUrl.value,
         projectId: projectState.selectedId,
         suiteId: suiteState.selectedId,
+        targetId: targetState.selectedId,
         userRequest: aiRequest.value,
         auth: collectAuth(),
       }),
@@ -1154,6 +1432,7 @@ async function runTest() {
         url: siteUrl.value,
         projectId: projectState.selectedId,
         suiteId: suiteState.selectedId,
+        targetId: targetState.selectedId,
         userRequest: aiRequest.value,
         auth: collectAuth(),
       }),
@@ -1198,6 +1477,7 @@ async function openRunDetail(runId) {
         duration: formatDuration(run.durationMs),
       }))}</strong>
       ${run.suiteName ? `<span>${escapeHtml(run.suiteName)} (${escapeHtml(run.suiteType || 'suite')})</span>` : ''}
+      ${run.targetName ? `<span>${escapeHtml(run.targetName)} (${escapeHtml(run.targetType || 'target')})</span>` : ''}
       <span>${new Date(run.createdAt).toLocaleString()}</span>
     `;
     caseList.innerHTML = '';
@@ -1251,9 +1531,14 @@ form.addEventListener('submit', (event) => {
 
 projectForm.addEventListener('submit', saveProject);
 suiteForm.addEventListener('submit', saveSuite);
+targetForm.addEventListener('submit', saveTarget);
 projectSearch.addEventListener('input', () => {
   projectState.query = projectSearch.value.trim();
   renderProjects();
+});
+targetSearch.addEventListener('input', () => {
+  targetState.query = targetSearch.value.trim();
+  renderTargets();
 });
 suiteSearch.addEventListener('input', () => {
   suiteState.query = suiteSearch.value.trim();
@@ -1263,13 +1548,27 @@ newProjectButton.addEventListener('click', () => {
   projectState.selectedId = '';
   suiteState.selectedId = '';
   suiteState.suites = [];
+  targetState.selectedId = '';
+  targetState.targets = [];
   projectSelect.value = '';
   projectSelectedMeta.textContent = t('common.manualUrl', 'Manual URL');
   resetProjectForm();
   resetSuiteForm();
+  resetTargetForm();
+  renderTargets();
   renderSuites();
 });
 deleteProjectButton.addEventListener('click', deleteSelectedProject);
+newTargetButton.addEventListener('click', () => {
+  targetState.selectedId = '';
+  targetSelect.value = '';
+  targetSelectedMeta.textContent = projectState.selectedId
+    ? t('target.fallbackProjectUrl', 'Fallback to project base URL')
+    : t('target.loadHint', 'Select a project to load targets');
+  resetTargetForm();
+  renderTargets();
+});
+deleteTargetButton.addEventListener('click', deleteSelectedTarget);
 newSuiteButton.addEventListener('click', () => {
   suiteState.selectedId = '';
   suiteSelect.value = '';
@@ -1282,6 +1581,8 @@ newSuiteButton.addEventListener('click', () => {
 deleteSuiteButton.addEventListener('click', deleteSelectedSuite);
 projectSelect.addEventListener('change', () => selectProject(projectSelect.value));
 suiteSelect.addEventListener('change', () => selectSuite(suiteSelect.value));
+targetSelect.addEventListener('change', () => selectTarget(targetSelect.value));
+targetType.addEventListener('change', updateTargetTypeFields);
 suiteTypeMenu.addEventListener('click', (event) => {
   const button = event.target.closest('button[data-suite-type]');
 
@@ -1351,6 +1652,8 @@ async function initApp() {
   applyTranslations();
   showPage((location.hash || '').replace('#', ''), { updateHash: false });
   updateAuthFields();
+  updateTargetTypeFields();
+  renderTargets();
   renderSuites();
   setSuiteType('seo-basic');
   await Promise.all([loadProjects(), loadRuns()]);
