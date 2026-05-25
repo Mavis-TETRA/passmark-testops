@@ -46,6 +46,11 @@ const targetSearch = document.querySelector('#targetSearch');
 const targetCount = document.querySelector('#targetCount');
 const targetSelect = document.querySelector('#targetSelect');
 const targetSelectedMeta = document.querySelector('#targetSelectedMeta');
+const selectionToggle = document.querySelector('#selectionToggle');
+const selectionBackdrop = document.querySelector('#selectionBackdrop');
+const selectionPopover = document.querySelector('#selectionPopover');
+const selectionCloseButton = document.querySelector('#selectionCloseButton');
+const selectionSummaryText = document.querySelector('#selectionSummaryText');
 const targetId = document.querySelector('#targetId');
 const targetName = document.querySelector('#targetName');
 const targetType = document.querySelector('#targetType');
@@ -61,6 +66,7 @@ const siteUrl = document.querySelector('#siteUrl');
 const runButton = document.querySelector('#runButton');
 const generateButton = document.querySelector('#generateButton');
 const refreshButton = document.querySelector('#refreshButton');
+const actionMenu = document.querySelector('#actionMenu');
 const systemStatus = document.querySelector('#systemStatus');
 const authMode = document.querySelector('#authMode');
 const authFields = document.querySelector('#authFields');
@@ -275,6 +281,8 @@ function refreshLocalizedUi() {
   if (!systemStatus.classList.contains('busy')) {
     setBusy(false, t('app.status.ready', 'Ready'));
   }
+
+  updateSelectionSummary();
 }
 
 function showPage(page, options = {}) {
@@ -326,6 +334,7 @@ function setProgress(activeStep, percent) {
   const activeElement = stepsList.querySelector(`[data-step="${activeStep}"]`);
   const activeOrder = Number(activeElement?.dataset.order || 0);
 
+  progressPanel.hidden = false;
   progressBar.style.width = `${percent}%`;
 
   for (const step of stepsList.querySelectorAll('li')) {
@@ -337,6 +346,7 @@ function setProgress(activeStep, percent) {
 
 function resetProgress() {
   progressBar.style.width = '0%';
+  progressPanel.hidden = true;
 
   for (const step of stepsList.querySelectorAll('li')) {
     step.classList.remove('active', 'done');
@@ -431,6 +441,35 @@ function collectAuth() {
 
 function updateAuthFields() {
   authFields.hidden = authMode.value !== 'password';
+  updateSelectionSummary();
+}
+
+function selectedOptionText(select) {
+  return select?.selectedOptions?.[0]?.textContent?.trim() || '';
+}
+
+function updateSelectionSummary() {
+  if (!selectionSummaryText) {
+    return;
+  }
+
+  const parts = [
+    selectedOptionText(projectSelect) || t('common.manualUrl', 'Manual URL'),
+    selectedOptionText(suiteSelect) || t('suite.noSelected', 'No suite selected'),
+    selectedOptionText(targetSelect) || t('target.noSelected', 'No target selected'),
+    selectedOptionText(authMode) || t('run.noLogin', 'No login'),
+  ];
+  const summary = parts.join(' / ');
+
+  selectionSummaryText.textContent = summary;
+  selectionToggle.title = summary;
+}
+
+function setSelectionPopover(open) {
+  selectionPopover.hidden = !open;
+  selectionBackdrop.hidden = !open;
+  selectionToggle.setAttribute('aria-expanded', String(open));
+  document.body.classList.toggle('modal-open', open);
 }
 
 function getSelectedProject() {
@@ -1546,6 +1585,42 @@ function getRunTitle(run) {
   return 'Website test run';
 }
 
+function compactErrorText(value) {
+  if (typeof value !== 'string') {
+    return '';
+  }
+
+  return value
+    .replace(/\u001b\[[0-9;]*m/g, '')
+    .replace(/\r/g, '')
+    .trim()
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 8)
+    .join('\n')
+    .slice(0, 1200);
+}
+
+function getRunErrorReason(run) {
+  return run?.errorReason || compactErrorText(run?.stderr) || compactErrorText(run?.stdout);
+}
+
+function renderRunErrorNote(run, className = 'run-error-note') {
+  const errorReason = getRunErrorReason(run);
+
+  if (!errorReason) {
+    return '';
+  }
+
+  return `
+    <span class="${className}">
+      <strong>${escapeHtml(t('detail.errorReason', 'Error reason'))}</strong>
+      <span>${escapeHtml(errorReason)}</span>
+    </span>
+  `;
+}
+
 function renderHistory() {
   const runs = historyState.runs;
   const totalPages = Math.max(1, Math.ceil(runs.length / historyState.pageSize));
@@ -1585,6 +1660,7 @@ function renderHistory() {
         <strong class="history-title">${escapeHtml(getRunTitle(run))}</strong>
         <strong>${escapeHtml(run.url)}</strong>
         <span>${new Date(run.createdAt).toLocaleString()}</span>
+        ${renderRunErrorNote(run, 'history-error-note')}
       </span>
       <span class="history-metrics">
         ${escapeHtml(t('history.passedSummary', '{passed}/{total} passed - {duration}', {
@@ -1733,10 +1809,10 @@ async function openRunDetail(runId) {
       ${run.targetName ? `<span>${escapeHtml(run.targetName)} (${escapeHtml(run.targetType || 'target')})</span>` : ''}
       <span>${new Date(run.createdAt).toLocaleString()}</span>
     `;
-    caseList.innerHTML = '';
+    caseList.innerHTML = renderRunErrorNote(run);
 
     if (!run.cases?.length) {
-      caseList.innerHTML = `<p class="empty">${escapeHtml(t('detail.noStored', 'No case detail was stored for this run.'))}</p>`;
+      caseList.innerHTML += `<p class="empty">${escapeHtml(t('detail.noStored', 'No case detail was stored for this run.'))}</p>`;
     } else {
       for (const testCase of run.cases) {
         const item = document.createElement('button');
@@ -1854,6 +1930,36 @@ deleteCaseButton.addEventListener('click', deleteSelectedCase);
 projectSelect.addEventListener('change', () => selectProject(projectSelect.value));
 suiteSelect.addEventListener('change', () => selectSuite(suiteSelect.value));
 targetSelect.addEventListener('change', () => selectTarget(targetSelect.value));
+selectionToggle.addEventListener('click', (event) => {
+  event.stopPropagation();
+  setSelectionPopover(selectionPopover.hidden);
+});
+selectionCloseButton.addEventListener('click', () => setSelectionPopover(false));
+selectionBackdrop.addEventListener('click', () => setSelectionPopover(false));
+selectionPopover.addEventListener('click', (event) => {
+  event.stopPropagation();
+});
+actionMenu.addEventListener('click', (event) => {
+  event.stopPropagation();
+});
+document.addEventListener('click', (event) => {
+  if (!selectionPopover.hidden) {
+    setSelectionPopover(false);
+  }
+
+  if (actionMenu.open && !actionMenu.contains(event.target)) {
+    actionMenu.open = false;
+  }
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !selectionPopover.hidden) {
+    setSelectionPopover(false);
+  }
+
+  if (event.key === 'Escape' && actionMenu.open) {
+    actionMenu.open = false;
+  }
+});
 targetType.addEventListener('change', updateTargetTypeFields);
 suiteTypeMenu.addEventListener('click', (event) => {
   const button = event.target.closest('button[data-suite-type]');
@@ -1866,6 +1972,13 @@ suiteTypeMenu.addEventListener('click', (event) => {
 });
 suiteType.addEventListener('change', () => setSuiteType(suiteType.value));
 authMode.addEventListener('change', updateAuthFields);
+for (const element of [projectSelectedMeta, suiteSelectedMeta, targetSelectedMeta]) {
+  new MutationObserver(updateSelectionSummary).observe(element, {
+    characterData: true,
+    childList: true,
+    subtree: true,
+  });
+}
 generateButton.addEventListener('click', generateOnly);
 refreshButton.addEventListener('click', loadRuns);
 prevPageButton.addEventListener('click', () => {
@@ -1930,6 +2043,7 @@ async function initApp() {
   renderCases();
   setSuiteType('seo-basic');
   await Promise.all([loadProjects(), loadRuns()]);
+  updateSelectionSummary();
 }
 
 initApp().catch((error) => {

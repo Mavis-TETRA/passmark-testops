@@ -86,6 +86,7 @@ type TestRun = {
   userRequest?: string;
   stdout: string;
   stderr: string;
+  errorReason?: string;
 };
 
 type TestRunSummary = Omit<TestRun, 'stdout' | 'stderr'>;
@@ -210,6 +211,22 @@ function dbRunToApiRun(run: any): TestRun {
   const results = Array.isArray(run.results) ? run.results : [];
   const supportedStatuses: TestRunStatus[] = ['queued', 'running', 'passed', 'failed', 'cancelled'];
   const status = supportedStatuses.includes(run.status) ? run.status : 'failed';
+  const cases = results.map((result: any) => {
+    const extra = parseJsonText(result.aiDiagnosis);
+
+    return {
+      title: `${result.caseCode} ${result.caseName}`.trim(),
+      status: result.status,
+      durationMs: result.durationMs,
+      error: result.errorMessage || undefined,
+      expected: result.expectedResult || undefined,
+      actual: typeof extra.actual === 'string' ? extra.actual : result.status,
+      selector: typeof extra.selector === 'string' ? extra.selector : undefined,
+      code: typeof extra.code === 'string' ? extra.code : result.caseCode,
+      description: typeof extra.description === 'string' ? extra.description : result.caseName,
+      steps: Array.isArray(extra.steps) ? (extra.steps as TestCaseStep[]) : undefined,
+    };
+  });
 
   return {
     id: run.id,
@@ -231,26 +248,12 @@ function dbRunToApiRun(run: any): TestRun {
       failed: run.failed,
       skipped: run.skipped || 0,
     },
-    cases: results.map((result: any) => {
-      const extra = parseJsonText(result.aiDiagnosis);
-
-      return {
-        title: `${result.caseCode} ${result.caseName}`.trim(),
-        status: result.status,
-        durationMs: result.durationMs,
-        error: result.errorMessage || undefined,
-        expected: result.expectedResult || undefined,
-        actual: typeof extra.actual === 'string' ? extra.actual : result.status,
-        selector: typeof extra.selector === 'string' ? extra.selector : undefined,
-        code: typeof extra.code === 'string' ? extra.code : result.caseCode,
-        description: typeof extra.description === 'string' ? extra.description : result.caseName,
-        steps: Array.isArray(extra.steps) ? (extra.steps as TestCaseStep[]) : undefined,
-      };
-    }),
+    cases,
     generatedCode: run.generatedCode,
     userRequest: run.userRequest,
     stdout: run.stdout,
     stderr: run.stderr,
+    errorReason: deriveRunErrorReason(status, cases, run.stderr, run.stdout),
   };
 }
 
@@ -264,6 +267,48 @@ function parseJsonText(value: unknown): Record<string, unknown> {
   } catch {
     return {};
   }
+}
+
+function compactErrorText(value: unknown): string {
+  if (typeof value !== 'string') {
+    return '';
+  }
+
+  const text = value
+    .replace(/\u001b\[[0-9;]*m/g, '')
+    .replace(/\r/g, '')
+    .trim();
+
+  if (!text) {
+    return '';
+  }
+
+  const lines = text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  return lines.slice(0, 8).join('\n').slice(0, 1200);
+}
+
+function deriveRunErrorReason(
+  status: TestRunStatus,
+  cases: TestCaseDetail[] = [],
+  stderr = '',
+  stdout = ''
+): string | undefined {
+  if (status !== 'failed' && status !== 'cancelled') {
+    return undefined;
+  }
+
+  const failedCase = cases.find((testCase) => testCase.error?.trim());
+
+  return (
+    compactErrorText(failedCase?.error) ||
+    compactErrorText(stderr) ||
+    compactErrorText(stdout) ||
+    'The run failed before a detailed test case result was stored.'
+  );
 }
 
 function dbSuiteToApiSuite(suite: any): Record<string, unknown> {
@@ -1286,8 +1331,10 @@ async function runPlaywright(
   runId = `${Date.now()}`
 ): Promise<TestRun> {
   const startedAt = Date.now();
-  const npxCommand = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+  const npxCommand = process.platform === 'win32' ? 'cmd.exe' : 'npx';
   const normalizedSpecPath = specPath.split(path.sep).join('/');
+  const playwrightArgs = ['playwright', 'test', normalizedSpecPath, '--project=chromium', '--reporter=json'];
+  const commandArgs = process.platform === 'win32' ? ['/d', '/s', '/c', 'npx.cmd', ...playwrightArgs] : playwrightArgs;
   let stdout = '';
   let stderr = '';
   let status: TestRun['status'] = 'passed';
@@ -1295,7 +1342,7 @@ async function runPlaywright(
   try {
     const result = await execFileAsync(
       npxCommand,
-      ['playwright', 'test', normalizedSpecPath, '--project=chromium', '--reporter=json'],
+      commandArgs,
       {
         cwd: rootDir,
         env: {

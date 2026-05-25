@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Passmark AI Test Console</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
     <link rel="stylesheet" href="/app.css">
   </head>
   <body>
@@ -66,6 +67,9 @@
         </section>
       </aside>
       <section class="workspace">
+        <img class="decor decor-coral" src="/decor-sparkle-coral.svg" alt="" aria-hidden="true">
+        <img class="decor decor-mint" src="/decor-sparkle-mint.svg" alt="" aria-hidden="true">
+        <img class="decor decor-squiggle" src="/decor-squiggle-mint.svg" alt="" aria-hidden="true">
         <section class="panel project-panel" data-page-section="projects suites">
           <div class="panel-heading">
             <div>
@@ -317,29 +321,93 @@
         </section>
 
         <form class="control-panel" id="testForm" data-page-section="run">
-          <label for="projectSelect" data-i18n="run.selectedProject">Selected project</label>
-          <div class="url-row project-select-row">
-            <select id="projectSelect">
-              <option value="" data-i18n="common.manualUrl">Manual URL</option>
-            </select>
-            <span class="project-selected-meta" id="projectSelectedMeta">No project selected</span>
-          </div>
+          <section class="selection-picker">
+            <button type="button" class="selection-toggle" id="selectionToggle" aria-expanded="false" aria-controls="selectionPopover">
+              <span class="selection-toggle-icon" aria-hidden="true"></span>
+              <span class="selection-toggle-copy">
+                <strong data-i18n="run.selectionSummary">Thông tin đã chọn</strong>
+                <small id="selectionSummaryText">Manual URL / No suite / No target</small>
+              </span>
+            </button>
+            <div class="selection-backdrop" id="selectionBackdrop" hidden></div>
+            <div class="selection-popover" id="selectionPopover" hidden>
+              <div class="selection-popover-heading">
+                <strong data-i18n="run.selectionSummary">Thông tin đã chọn</strong>
+                <button type="button" class="secondary icon-button selection-close" id="selectionCloseButton" aria-label="Close">×</button>
+              </div>
 
-          <label for="suiteSelect" data-i18n="run.selectedSuite">Selected test suite</label>
-          <div class="url-row project-select-row">
-            <select id="suiteSelect">
-              <option value="" data-i18n="suite.noSelected">No suite selected</option>
-            </select>
-            <span class="project-selected-meta" id="suiteSelectedMeta">Select a project to load suites</span>
-          </div>
+              <label for="projectSelect" data-i18n="run.selectedProject">Selected project</label>
+              <div class="url-row project-select-row">
+                <select id="projectSelect">
+                  <option value="" data-i18n="common.manualUrl">Manual URL</option>
+                </select>
+                <span class="project-selected-meta" id="projectSelectedMeta">No project selected</span>
+              </div>
 
-          <label for="targetSelect" data-i18n="run.selectedTarget">Selected target</label>
-          <div class="url-row project-select-row target-select-row">
-            <select id="targetSelect">
-              <option value="" data-i18n="target.noSelected">No target selected</option>
-            </select>
-            <span class="project-selected-meta" id="targetSelectedMeta">Fallback to project base URL</span>
-          </div>
+              <label for="suiteSelect" data-i18n="run.selectedSuite">Selected test suite</label>
+              <div class="url-row project-select-row">
+                <select id="suiteSelect">
+                  <option value="" data-i18n="suite.noSelected">No suite selected</option>
+                </select>
+                <span class="project-selected-meta" id="suiteSelectedMeta">Select a project to load suites</span>
+              </div>
+
+              <label for="targetSelect" data-i18n="run.selectedTarget">Selected target</label>
+              <div class="url-row project-select-row target-select-row">
+                <select id="targetSelect">
+                  <option value="" data-i18n="target.noSelected">No target selected</option>
+                </select>
+                <span class="project-selected-meta" id="targetSelectedMeta">Fallback to project base URL</span>
+              </div>
+
+              <section class="auth-panel">
+                <div class="auth-heading">
+                  <label for="authMode" data-i18n="run.authentication">Authentication</label>
+                  <select id="authMode" name="authMode">
+                    <option value="none" data-i18n="run.noLogin">No login</option>
+                    <option value="password" data-i18n="run.usernamePassword">Username / Password</option>
+                  </select>
+                </div>
+                <div class="auth-fields" id="authFields" hidden>
+                  <div class="field-grid">
+                    <label>
+                      <span data-i18n="run.loginUrl">Login URL</span>
+                      <input id="loginUrl" type="url" placeholder="https://example.com/login">
+                    </label>
+                    <label>
+                      <span data-i18n="run.username">Username</span>
+                      <input id="authUsername" type="text" autocomplete="username">
+                    </label>
+                    <label>
+                      <span data-i18n="run.password">Password</span>
+                      <input id="authPassword" type="password" autocomplete="current-password">
+                    </label>
+                    <label>
+                      <span data-i18n="run.successSelector">Success selector</span>
+                      <input id="successSelector" type="text" placeholder=".dashboard, nav[aria-label]">
+                    </label>
+                  </div>
+                  <details class="selector-details">
+                    <summary data-i18n="run.advancedSelectors">Advanced selectors</summary>
+                    <div class="field-grid">
+                      <label>
+                        <span data-i18n="run.usernameSelector">Username selector</span>
+                        <input id="usernameSelector" type="text" placeholder='input[name="email"]'>
+                      </label>
+                      <label>
+                        <span data-i18n="run.passwordSelector">Password selector</span>
+                        <input id="passwordSelector" type="text" placeholder='input[type="password"]'>
+                      </label>
+                      <label>
+                        <span data-i18n="run.submitSelector">Submit selector</span>
+                        <input id="submitSelector" type="text" placeholder='button[type="submit"]'>
+                      </label>
+                    </div>
+                  </details>
+                </div>
+              </section>
+            </div>
+          </section>
 
           <label for="siteUrl" data-i18n="run.websiteUrl">Website URL</label>
           <div class="url-row">
@@ -353,68 +421,28 @@
             >
           </div>
 
-          <section class="auth-panel">
-            <div class="auth-heading">
-              <label for="authMode" data-i18n="run.authentication">Authentication</label>
-              <select id="authMode" name="authMode">
-                <option value="none" data-i18n="run.noLogin">No login</option>
-                <option value="password" data-i18n="run.usernamePassword">Username / Password</option>
-              </select>
-            </div>
-            <div class="auth-fields" id="authFields" hidden>
-              <div class="field-grid">
-                <label>
-                  <span data-i18n="run.loginUrl">Login URL</span>
-                  <input id="loginUrl" type="url" placeholder="https://example.com/login">
-                </label>
-                <label>
-                  <span data-i18n="run.username">Username</span>
-                  <input id="authUsername" type="text" autocomplete="username">
-                </label>
-                <label>
-                  <span data-i18n="run.password">Password</span>
-                  <input id="authPassword" type="password" autocomplete="current-password">
-                </label>
-                <label>
-                  <span data-i18n="run.successSelector">Success selector</span>
-                  <input id="successSelector" type="text" placeholder=".dashboard, nav[aria-label]">
-                </label>
-              </div>
-              <details class="selector-details">
-                <summary data-i18n="run.advancedSelectors">Advanced selectors</summary>
-                <div class="field-grid">
-                  <label>
-                    <span data-i18n="run.usernameSelector">Username selector</span>
-                    <input id="usernameSelector" type="text" placeholder='input[name="email"]'>
-                  </label>
-                  <label>
-                    <span data-i18n="run.passwordSelector">Password selector</span>
-                    <input id="passwordSelector" type="text" placeholder='input[type="password"]'>
-                  </label>
-                  <label>
-                    <span data-i18n="run.submitSelector">Submit selector</span>
-                    <input id="submitSelector" type="text" placeholder='button[type="submit"]'>
-                  </label>
-                </div>
-              </details>
-            </div>
-          </section>
-
-          <label class="prompt-label" for="aiRequest" data-i18n="run.aiRequest">AI request</label>
+          <label class="prompt-label" for="aiRequest" data-i18n="run.aiRequest">What do you want to test?</label>
           <div class="prompt-row">
             <textarea
               id="aiRequest"
               class="prompt-input"
-              placeholder="Example: add checks for Open Graph title, robots meta, image alt text..."
+              placeholder="Example: check title, image alt text, broken links..."
               data-i18n-placeholder="run.aiPlaceholder"
             ></textarea>
           </div>
           <div class="button-row">
             <button type="submit" id="runButton" data-i18n="run.runTest">Run test</button>
-            <button type="button" class="secondary" id="generateButton" data-i18n="run.generate">Generate only</button>
-            <button type="button" class="secondary" id="refreshButton" data-i18n="run.refresh">Refresh history</button>
+            <details class="action-menu" id="actionMenu">
+              <summary>
+                <span data-i18n="run.more">More</span>
+              </summary>
+              <div class="action-menu-panel">
+                <button type="button" class="secondary" id="generateButton" data-i18n="run.generate">Generate only</button>
+                <button type="button" class="secondary" id="refreshButton" data-i18n="run.refresh">Refresh history</button>
+              </div>
+            </details>
           </div>
-          <div class="progress-panel" id="progressPanel">
+          <div class="progress-panel" id="progressPanel" hidden>
             <div class="progress-bar">
               <span id="progressBar"></span>
             </div>
