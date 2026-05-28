@@ -19,7 +19,7 @@ Dự án này được xây dựng để:
 - Lưu project, suite, test case, run history, result, artifact và AI log vào PostgreSQL.
 - Hỗ trợ giao diện dashboard tối màu và song ngữ VI/EN.
 
-Điểm quan trọng: với flow SEO Basic hiện tại, AI không được sinh raw TypeScript. AI chỉ trả về test plan JSON, backend validate plan đó rồi render Playwright code từ template ổn định.
+Điểm quan trọng: flow chính hiện là Custom suite. Backend giao vai trò QA lead cho AI để tạo nhiều test case rõ ràng, trả thêm phần giải thích và render Playwright spec an toàn; riêng SEO Basic vẫn dùng template ổn định.
 
 ## Tech Stack
 
@@ -44,7 +44,7 @@ Dự án này được xây dựng để:
 |   |-- migrations/                 # PostgreSQL migrations
 |   `-- legacy-sqlite/              # Migration SQLite cũ để tham chiếu
 |-- scripts/
-|   `-- generate-seo-test.ts        # Generator legacy/custom Playwright
+|   `-- generate-playwright-test.ts # Generator custom Playwright
 |-- src/
 |   |-- server.ts                   # HTTP server, API, run flow
 |   |-- db.ts                       # Prisma client và seed helper
@@ -214,7 +214,7 @@ docker compose up -d postgres
   "db:sqlite:migrate-to-postgres": "tsx prisma/migrate-sqlite-to-postgres.ts",
   "test": "playwright test",
   "test:chromium": "playwright test --project=chromium",
-  "ai:seo": "tsx scripts/generate-seo-test.ts"
+  "ai:test": "tsx scripts/generate-playwright-test.ts"
 }
 ```
 
@@ -226,9 +226,9 @@ docker compose up -d postgres
 4. Nếu target là `web-url`, `local-web` hoặc `api`, hệ thống dùng `target.url`; nếu không chọn target thì fallback về `project.baseUrl`.
 5. Target `source-code` lưu `localPath` để dùng cho source scan sau này.
 6. User nhập AI request nếu muốn.
-7. Backend gọi local AI để tạo test plan JSON.
-8. Backend validate JSON.
-9. Với suite `seo-basic`, backend render Playwright spec bằng template ổn định.
+7. Backend gọi local AI để tạo kế hoạch kiểm thử và Playwright spec.
+8. Với suite `custom`, AI được yêu cầu phân rã request thành nhiều case rõ ràng và trả thêm phần giải thích.
+9. Với suite `seo-basic`, backend vẫn render Playwright spec bằng template ổn định.
 10. Backend chạy Playwright:
 
 ```powershell
@@ -347,7 +347,7 @@ Các thư mục này không nên commit lên Git.
 - `node_modules/`
 - `storage/`
 - Playwright output
-- generated spec `tests/generated-seo.spec.ts`
+- generated specs `tests/generated-custom.spec.ts`, `tests/generated-seo-basic.spec.ts`
 - log/build/cache file
 
 File nên commit:
@@ -413,13 +413,13 @@ npm run db:seed
 2. UI mở được tại `http://localhost:5000`.
 3. Tạo, sửa, xóa project được từ UI.
 4. Chọn project thì Website URL tự lấy từ `baseUrl`.
-5. Project mới có default environment, Basic SEO suite và SEO cases.
+5. Project mới có default environment và Custom Website Checks suite.
 6. `GET /api/test-suites?projectId=...` trả về suites và cases.
-7. Run Center chạy được Basic SEO test.
+7. Run Center chạy được Custom Website Checks suite.
 8. Latest Result cập nhật sau khi chạy.
 9. Run History hiển thị run đã lưu trong PostgreSQL.
 10. Click vào một run xem được case details.
-11. Nếu local AI lỗi, fallback SEO plan vẫn render và chạy.
+11. Nếu local AI lỗi, fallback custom checks vẫn render và chạy.
 
 ## Ghi Chú Khi Phát Triển Tiếp
 

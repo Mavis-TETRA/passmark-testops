@@ -4,7 +4,7 @@ import fs from 'fs';
 import http from 'http';
 import path from 'path';
 import { promisify } from 'util';
-import { AuthConfig, generateSeoTest } from '../scripts/generate-seo-test';
+import { AuthConfig, generatePlaywrightTest } from '../scripts/generate-playwright-test';
 import { createDefaultSuiteForProject, createDefaultTargetForProject, ensureDefaultData, newId, prisma } from './db';
 import { getConfiguredLocalAIModel } from './local-ai-client';
 import { generateSeoTestPlan } from './seo-test-plan';
@@ -83,6 +83,7 @@ type TestRun = {
   };
   cases?: TestCaseDetail[];
   generatedCode?: string;
+  aiExplanation?: string;
   userRequest?: string;
   stdout: string;
   stderr: string;
@@ -147,6 +148,12 @@ type RunQueueJob = {
   context: RunContext;
 };
 
+type GeneratedSpecResult = {
+  outputPath: string;
+  code: string;
+  aiExplanation?: string;
+};
+
 const execFileAsync = promisify(execFile);
 const rootDir = process.cwd();
 const publicDir = path.join(rootDir, 'public');
@@ -207,8 +214,21 @@ function toRunSummary(run: TestRun): TestRunSummary {
   return summary;
 }
 
+function readRunRawData(rawOutputPath?: string): Record<string, unknown> {
+  if (!rawOutputPath) {
+    return {};
+  }
+
+  try {
+    return parseJsonText(fs.readFileSync(rawOutputPath, 'utf-8'));
+  } catch {
+    return {};
+  }
+}
+
 function dbRunToApiRun(run: any): TestRun {
   const results = Array.isArray(run.results) ? run.results : [];
+  const rawData = readRunRawData(run.rawOutputPath);
   const supportedStatuses: TestRunStatus[] = ['queued', 'running', 'passed', 'failed', 'cancelled'];
   const status = supportedStatuses.includes(run.status) ? run.status : 'failed';
   const cases = results.map((result: any) => {
@@ -250,6 +270,7 @@ function dbRunToApiRun(run: any): TestRun {
     },
     cases,
     generatedCode: run.generatedCode,
+    aiExplanation: typeof rawData.aiExplanation === 'string' ? rawData.aiExplanation : undefined,
     userRequest: run.userRequest,
     stdout: run.stdout,
     stderr: run.stderr,
@@ -409,7 +430,7 @@ function normalizeSuiteType(value: unknown): TestSuiteType {
 
   return supportedTypes.includes(value as TestSuiteType)
     ? (value as TestSuiteType)
-    : 'seo-basic';
+    : 'custom';
 }
 
 function normalizeTargetType(value: unknown): TestTargetType {
@@ -611,6 +632,40 @@ function buildSuiteUserRequest(userRequest: string, suite?: TestSuite): string {
   }
 
   return suite.description || suite.name;
+}
+
+function suiteInstruction(suite?: TestSuite): string {
+  const config = suiteConfig(suite);
+
+  if (!config) {
+    return '';
+  }
+
+  return typeof config.instruction === 'string' ? config.instruction.trim() : '';
+}
+
+function suiteConfig(suite?: TestSuite): Record<string, unknown> | undefined {
+  if (!suite?.config) {
+    return undefined;
+  }
+
+  const config = suite.config as unknown;
+
+  if (typeof config === 'string') {
+    return parseJsonText(config);
+  }
+
+  return config && typeof config === 'object' ? (config as Record<string, unknown>) : undefined;
+}
+
+function buildGeneratorRequest(userRequest: string, suite?: TestSuite): string {
+  const parts = [
+    suite?.description ? `Suite description: ${suite.description}` : '',
+    suiteInstruction(suite) ? `Suite custom instruction: ${suiteInstruction(suite)}` : '',
+    userRequest.trim() ? `Run request: ${userRequest.trim()}` : '',
+  ].filter(Boolean);
+
+  return parts.join('\n\n') || buildSuiteUserRequest(userRequest, suite);
 }
 
 function normalizeDbProjectInput(value: Record<string, unknown>, existing?: any) {
@@ -1208,7 +1263,7 @@ function previewGeneratedCases(generatedCode = '', userRequest = ''): TestCaseDe
   const cases: TestCaseDetail[] = [];
   let match: RegExpExecArray | null;
 
-  while ((match = titlePattern.exec(generatedCode)) && cases.length < 12) {
+  while ((match = titlePattern.exec(generatedCode)) && cases.length < 80) {
     const title = match[1];
     const codeSnippet = findTestSnippet(generatedCode, title) || '';
 
@@ -1240,24 +1295,157 @@ function caseCodeFromTitle(title: string): string {
   return title.match(/\b[A-Z]+-\d+\b/)?.[0] || '';
 }
 
-async function saveRunToDb(run: TestRun, outputPath: string): Promise<TestRun> {
+function generatedCaseCode(index: number): string {
+  return `CASE-${String(index + 1).padStart(3, '0')}`;
+}
+
+function testResultPayload(testCase: TestCaseDetail, index: number) {
+  const caseCode = caseCodeFromTitle(testCase.title) || generatedCaseCode(index);
+  const caseName = caseCodeFromTitle(testCase.title)
+    ? testCase.title.replace(caseCodeFromTitle(testCase.title), '').trim()
+    : testCase.title;
+
+  return {
+    caseCode,
+    caseName,
+    status: testCase.status || 'pending',
+    durationMs: Math.round(testCase.durationMs || 0),
+    errorMessage: testCase.error || '',
+    stackTrace: testCase.error || '',
+    expectedResult: testCase.expected || '',
+    aiDiagnosis: JSON.stringify({
+      description: testCase.description || '',
+      actual: testCase.actual || '',
+      selector: testCase.selector || '',
+      code: testCase.code || '',
+      steps: testCase.steps || [],
+    }),
+  };
+}
+
+function rawRunPath(runId: string): string {
+  return path.join(storageDir, 'raw-runs', `${runId}.json`);
+}
+
+function writeRawRunData(
+  runId: string,
+  data: {
+    stdout?: string;
+    stderr?: string;
+    generatedCode?: string;
+    aiExplanation?: string;
+  }
+) {
   const rawOutputDir = path.join(storageDir, 'raw-runs');
   fs.mkdirSync(rawOutputDir, { recursive: true });
-  const rawOutputPath = path.join(rawOutputDir, `${run.id}.json`);
-
   fs.writeFileSync(
-    rawOutputPath,
+    rawRunPath(runId),
     JSON.stringify(
       {
-        stdout: run.stdout,
-        stderr: run.stderr,
-        generatedCode: run.generatedCode,
+        stdout: data.stdout || '',
+        stderr: data.stderr || '',
+        generatedCode: data.generatedCode || '',
+        aiExplanation: data.aiExplanation || '',
       },
       null,
       2
     ),
     'utf-8'
   );
+}
+
+async function updateRunSummaryFromResults(runId: string, status?: TestRunStatus, durationMs?: number) {
+  const results = await prisma.testResult.findMany({ where: { runId } });
+  const passed = results.filter((result) => result.status === 'passed').length;
+  const skipped = results.filter((result) => result.status === 'skipped').length;
+  const unfinished = results.filter((result) => ['pending', 'running'].includes(result.status)).length;
+  const failed = results.length - passed - skipped - unfinished;
+
+  await prisma.testRun.update({
+    where: { id: runId },
+    data: {
+      total: results.length,
+      passed,
+      failed,
+      skipped,
+      ...(status ? { status } : {}),
+      ...(typeof durationMs === 'number' ? { durationMs } : {}),
+    },
+  });
+}
+
+async function initializeProgressiveRun(
+  runId: string,
+  result: GeneratedSpecResult,
+  job: RunQueueJob,
+  outputPath: string
+): Promise<Array<{ id: string; testCase: TestCaseDetail; index: number }>> {
+  const cases = previewGeneratedCases(result.code, job.userRequest);
+  const rawOutputPath = rawRunPath(runId);
+
+  writeRawRunData(runId, {
+    generatedCode: result.code,
+    aiExplanation: result.aiExplanation || '',
+  });
+
+  const rows = cases.map((testCase, index) => ({
+    id: newId('result'),
+    testCase,
+    index,
+  }));
+
+  await prisma.$transaction(async (tx) => {
+    await tx.artifact.deleteMany({ where: { runId } });
+    await tx.testResult.deleteMany({ where: { runId } });
+    await tx.testRun.update({
+      where: { id: runId },
+      data: {
+        projectId: job.context.projectId,
+        suiteId: job.context.suiteId,
+        targetId: job.context.targetId,
+        url: job.url,
+        status: 'running',
+        total: rows.length,
+        passed: 0,
+        failed: 0,
+        skipped: 0,
+        generatedSpecPath: outputPath,
+        rawOutputPath,
+        userRequest: job.userRequest || '',
+        stdout: '',
+        stderr: '',
+        generatedCode: result.code || '',
+        results: {
+          create: rows.map(({ id, testCase, index }) => ({
+            id,
+            ...testResultPayload(testCase, index),
+          })),
+        },
+        artifacts: {
+          create: [
+            {
+              id: newId('artifact'),
+              type: 'raw-log',
+              path: rawOutputPath,
+            },
+          ],
+        },
+      },
+    });
+  });
+
+  return rows;
+}
+
+async function saveRunToDb(run: TestRun, outputPath: string): Promise<TestRun> {
+  const rawOutputPath = rawRunPath(run.id);
+
+  writeRawRunData(run.id, {
+    stdout: run.stdout,
+    stderr: run.stderr,
+    generatedCode: run.generatedCode,
+    aiExplanation: run.aiExplanation || '',
+  });
 
   await prisma.$transaction(async (tx) => {
     await tx.artifact.deleteMany({ where: { runId: run.id } });
@@ -1282,28 +1470,10 @@ async function saveRunToDb(run: TestRun, outputPath: string): Promise<TestRun> {
         stderr: run.stderr,
         generatedCode: run.generatedCode || '',
         results: {
-          create: (run.cases || []).map((testCase) => {
-            const caseCode = caseCodeFromTitle(testCase.title);
-            const caseName = caseCode ? testCase.title.replace(caseCode, '').trim() : testCase.title;
-
-            return {
-              id: newId('result'),
-              caseCode,
-              caseName,
-              status: testCase.status === 'passed' ? 'passed' : testCase.status === 'skipped' ? 'skipped' : 'failed',
-              durationMs: Math.round(testCase.durationMs || 0),
-              errorMessage: testCase.error || '',
-              stackTrace: testCase.error || '',
-              expectedResult: testCase.expected || '',
-              aiDiagnosis: JSON.stringify({
-                description: testCase.description || '',
-                actual: testCase.actual || '',
-                selector: testCase.selector || '',
-                code: testCase.code || '',
-                steps: testCase.steps || [],
-              }),
-            };
-          }),
+          create: (run.cases || []).map((testCase, index) => ({
+            id: newId('result'),
+            ...testResultPayload(testCase, index),
+          })),
         },
         artifacts: {
           create: [
@@ -1327,8 +1497,9 @@ async function runPlaywright(
   userRequest = '',
   auth?: AuthInput,
   context: RunContext = {},
-  specPath = path.join('tests', 'generated-seo.spec.ts'),
-  runId = `${Date.now()}`
+  specPath = path.join('tests', 'generated-custom.spec.ts'),
+  runId = `${Date.now()}`,
+  aiExplanation = ''
 ): Promise<TestRun> {
   const startedAt = Date.now();
   const npxCommand = process.platform === 'win32' ? 'cmd.exe' : 'npx';
@@ -1391,6 +1562,7 @@ async function runPlaywright(
     summary,
     cases,
     generatedCode,
+    aiExplanation,
     userRequest,
     stdout,
     stderr,
@@ -1399,19 +1571,212 @@ async function runPlaywright(
   return run;
 }
 
+function playwrightCommandArgs(specPath: string, extraArgs: string[] = []) {
+  const normalizedSpecPath = specPath.split(path.sep).join('/');
+  const playwrightArgs = [
+    'playwright',
+    'test',
+    normalizedSpecPath,
+    '--project=chromium',
+    '--reporter=json',
+    ...extraArgs,
+  ];
+
+  return process.platform === 'win32' ? ['/d', '/s', '/c', 'npx.cmd', ...playwrightArgs] : playwrightArgs;
+}
+
+function playwrightCommand(): string {
+  return process.platform === 'win32' ? 'cmd.exe' : 'npx';
+}
+
+function escapedGrep(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+async function runOnePlaywrightCase(
+  title: string,
+  specPath: string,
+  auth?: AuthInput
+): Promise<{
+  stdout: string;
+  stderr: string;
+  caseDetail: TestCaseDetail;
+}> {
+  const startedAt = Date.now();
+  let stdout = '';
+  let stderr = '';
+
+  try {
+    const result = await execFileAsync(
+      playwrightCommand(),
+      playwrightCommandArgs(specPath, ['--grep', escapedGrep(title)]),
+      {
+        cwd: rootDir,
+        env: {
+          ...process.env,
+          PASSMARK_AUTH_PASSWORD: auth?.password || '',
+        },
+        maxBuffer: 1024 * 1024 * 10,
+      }
+    );
+
+    stdout = result.stdout;
+    stderr = result.stderr;
+  } catch (error) {
+    if (error && typeof error === 'object') {
+      stdout = 'stdout' in error && typeof error.stdout === 'string' ? error.stdout : '';
+      stderr = 'stderr' in error && typeof error.stderr === 'string' ? error.stderr : String(error);
+    } else {
+      stderr = String(error);
+    }
+  }
+
+  const details = extractCaseDetails(stdout);
+  const matchingDetail = details.find((testCase) => testCase.title === title) || details[0];
+
+  return {
+    stdout,
+    stderr,
+    caseDetail: matchingDetail || {
+      title,
+      status: 'failed',
+      durationMs: Date.now() - startedAt,
+      error: compactErrorText(stderr) || 'Playwright did not report a result for this generated case.',
+    },
+  };
+}
+
+async function updateProgressiveCase(
+  resultId: string,
+  testCase: TestCaseDetail,
+  index: number
+) {
+  await prisma.testResult.update({
+    where: { id: resultId },
+    data: testResultPayload(testCase, index),
+  });
+}
+
+async function runPlaywrightProgressively(
+  job: RunQueueJob,
+  result: GeneratedSpecResult,
+  outputPath: string
+) {
+  const startedAt = Date.now();
+  const specPath = path.relative(rootDir, outputPath);
+  const plannedCases = await initializeProgressiveRun(job.runId, result, job, outputPath);
+  let stdout = '';
+  let stderr = '';
+
+  if (!plannedCases.length) {
+    throw new Error('No generated test cases were found in the Playwright spec.');
+  }
+
+  const audit = await collectSeoAuditValues(job.url, job.auth);
+
+  for (const plannedCase of plannedCases) {
+    const runningCase: TestCaseDetail = {
+      ...plannedCase.testCase,
+      status: 'running',
+      actual: 'Running now.',
+      steps: buildGeneratedSteps(
+        {
+          ...plannedCase.testCase,
+          status: 'running',
+        },
+        plannedCase.testCase.code || ''
+      ),
+    };
+
+    await updateProgressiveCase(plannedCase.id, runningCase, plannedCase.index);
+    await updateRunSummaryFromResults(job.runId, 'running', Date.now() - startedAt);
+
+    const caseResult = await runOnePlaywrightCase(plannedCase.testCase.title, specPath, job.auth);
+    stdout += `${caseResult.stdout}\n`;
+    stderr += `${caseResult.stderr}\n`;
+
+    const enrichedCase = enrichCaseDetails(
+      [
+        {
+          ...caseResult.caseDetail,
+          title: plannedCase.testCase.title,
+        },
+      ],
+      audit,
+      result.code,
+      job.userRequest
+    )[0];
+
+    await updateProgressiveCase(plannedCase.id, enrichedCase, plannedCase.index);
+    writeRawRunData(job.runId, {
+      stdout,
+      stderr,
+      generatedCode: result.code,
+      aiExplanation: result.aiExplanation || '',
+    });
+    await prisma.testRun.update({
+      where: { id: job.runId },
+      data: {
+        stdout,
+        stderr,
+        generatedCode: result.code,
+      },
+    });
+    await updateRunSummaryFromResults(job.runId, 'running', Date.now() - startedAt);
+  }
+
+  const results = await prisma.testResult.findMany({ where: { runId: job.runId } });
+  const hasFailed = results.some((testCase) => !['passed', 'skipped'].includes(testCase.status));
+  const finalStatus: TestRunStatus = hasFailed ? 'failed' : 'passed';
+
+  await updateRunSummaryFromResults(job.runId, finalStatus, Date.now() - startedAt);
+  await prisma.testRun.update({
+    where: { id: job.runId },
+    data: {
+      stdout,
+      stderr,
+      generatedCode: result.code,
+    },
+  });
+}
+
 async function generateSpecForRun(
   url: string,
   userRequest: string,
   auth: AuthInput,
   suite?: TestSuite
-): Promise<{
-  outputPath: string;
-  code: string;
-}> {
+): Promise<GeneratedSpecResult> {
   const useStableSeo = !suite || suite.type === 'seo-basic';
 
   if (!useStableSeo) {
-    return generateSeoTest(url, userRequest, authConfigForGenerator(auth));
+    const generatorRequest = buildGeneratorRequest(userRequest, suite);
+    const result = await generatePlaywrightTest(url, generatorRequest, authConfigForGenerator(auth), {
+      forceIntent: 'custom',
+      suiteName: suite.name,
+      suiteType: suite.type,
+      suiteDescription: suite.description,
+      suiteConfig: suiteConfig(suite),
+      minCases: 12,
+      maxCases: 60,
+    });
+
+    await prisma.aIRequestLog.create({
+      data: {
+        id: newId('ai-log'),
+        provider: 'local-ai',
+        model: getConfiguredLocalAIModel(),
+        prompt: result.aiPrompt || generatorRequest,
+        response: result.aiResponse || result.code,
+        status: result.aiStatus || 'passed',
+        durationMs: result.durationMs || 0,
+      },
+    });
+
+    return {
+      outputPath: result.outputPath,
+      code: result.code,
+      aiExplanation: result.aiExplanation,
+    };
   }
 
   const enabledCases = suite?.id
@@ -1433,7 +1798,12 @@ async function generateSpecForRun(
     },
   });
 
-  return writeSeoBasicSpec(planResult.plan, authConfigForGenerator(auth));
+  const spec = writeSeoBasicSpec(planResult.plan, authConfigForGenerator(auth));
+
+  return {
+    ...spec,
+    aiExplanation: planResult.aiExplanation,
+  };
 }
 
 async function createQueuedRun(job: RunQueueJob): Promise<TestRun> {
@@ -1481,16 +1851,7 @@ async function executeRunQueueJob(job: RunQueueJob) {
       ? ((await prisma.testSuite.findUnique({ where: { id: job.context.suiteId } })) as unknown as TestSuite | undefined)
       : undefined;
     const result = await generateSpecForRun(job.url, job.userRequest, job.auth, suite);
-    const run = await runPlaywright(
-      job.url,
-      result.code,
-      job.userRequest,
-      job.auth,
-      job.context,
-      path.relative(rootDir, result.outputPath),
-      job.runId
-    );
-    await saveRunToDb(run, result.outputPath);
+    await runPlaywrightProgressively(job, result, result.outputPath);
   } catch (error) {
     await failRun(job.runId, error);
   }
@@ -1581,6 +1942,7 @@ function serveStatic(request: http.IncomingMessage, response: http.ServerRespons
 
   response.writeHead(200, {
     'Content-Type': contentTypes[ext] || 'application/octet-stream',
+    'Cache-Control': 'no-store',
   });
   fs.createReadStream(filePath).pipe(response);
 }
@@ -1849,6 +2211,7 @@ const server = http.createServer(async (request, response) => {
         targetType: target?.type,
         outputPath: result.outputPath,
         code: result.code,
+        aiExplanation: result.aiExplanation || '',
         cases: previewGeneratedCases(result.code, userRequest),
       });
       return;

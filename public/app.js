@@ -81,6 +81,8 @@ const aiRequest = document.querySelector('#aiRequest');
 const generatedPlan = document.querySelector('#generatedPlan');
 const generatedCode = document.querySelector('#generatedCode');
 const generatedPath = document.querySelector('#generatedPath');
+const aiExplanationPanel = document.querySelector('#aiExplanationPanel');
+const aiExplanationText = document.querySelector('#aiExplanationText');
 const toggleCodeButton = document.querySelector('#toggleCodeButton');
 const codePanel = document.querySelector('#codePanel');
 const historyList = document.querySelector('#historyList');
@@ -146,6 +148,27 @@ const targetState = {
 const pageState = {
   current: 'run',
 };
+let runControlsLocked = false;
+const runLockControls = [
+  projectSelect,
+  suiteSelect,
+  targetSelect,
+  selectionToggle,
+  siteUrl,
+  aiRequest,
+  authMode,
+  loginUrl,
+  authUsername,
+  authPassword,
+  successSelector,
+  usernameSelector,
+  passwordSelector,
+  submitSelector,
+  runButton,
+  generateButton,
+  refreshButton,
+  toggleCodeButton,
+].filter(Boolean);
 const suiteTypeConfig = {
   'seo-basic': {
     labelKey: 'suite.seoBasic.label',
@@ -278,7 +301,7 @@ function refreshLocalizedUi() {
     toggleCodeButton.textContent = t('flow.hideCode', 'Hide code');
   }
 
-  if (!systemStatus.classList.contains('busy')) {
+  if (!runControlsLocked) {
     setBusy(false, t('app.status.ready', 'Ready'));
   }
 
@@ -312,9 +335,8 @@ function showPage(page, options = {}) {
 }
 
 function setBusy(isBusy, label = t('app.status.ready', 'Ready')) {
-  runButton.disabled = isBusy;
-  generateButton.disabled = isBusy;
-  refreshButton.disabled = isBusy;
+  runControlsLocked = isBusy;
+  setRunControlsLocked(isBusy);
   systemStatus.textContent = label;
   systemStatus.className = `status-pill${isBusy ? ' busy' : ''}`;
 
@@ -322,6 +344,41 @@ function setBusy(isBusy, label = t('app.status.ready', 'Ready')) {
     runButton.textContent = defaultButtonLabels.run;
     generateButton.textContent = defaultButtonLabels.generate;
     refreshButton.textContent = defaultButtonLabels.refresh;
+  }
+}
+
+function setControlLocked(element, isLocked) {
+  if (!element || typeof element.disabled !== 'boolean') {
+    return;
+  }
+
+  if (isLocked) {
+    if (!('runLockDisabled' in element.dataset)) {
+      element.dataset.runLockDisabled = String(element.disabled);
+    }
+
+    element.disabled = true;
+    return;
+  }
+
+  if ('runLockDisabled' in element.dataset) {
+    element.disabled = element.dataset.runLockDisabled === 'true';
+    delete element.dataset.runLockDisabled;
+  }
+}
+
+function setRunControlsLocked(isLocked) {
+  for (const control of runLockControls) {
+    setControlLocked(control, isLocked);
+  }
+
+  form.classList.toggle('is-locked', isLocked);
+  actionMenu.classList.toggle('is-disabled', isLocked);
+  actionMenu.setAttribute('aria-disabled', String(isLocked));
+
+  if (isLocked) {
+    actionMenu.open = false;
+    setSelectionPopover(false);
   }
 }
 
@@ -378,6 +435,10 @@ function formatDuration(ms) {
 }
 
 function statusText(status) {
+  if (status === 'pending') {
+    return t('common.pending', 'Pending');
+  }
+
   if (status === 'queued') {
     return t('common.queued', 'Queued');
   }
@@ -407,6 +468,10 @@ function statusText(status) {
 
 function isRunDone(run) {
   return ['passed', 'failed', 'cancelled'].includes(run?.status);
+}
+
+function isRunActive(run) {
+  return ['queued', 'running'].includes(run?.status);
 }
 
 function sleep(ms) {
@@ -544,7 +609,7 @@ function updateSuiteTypeMenu() {
 }
 
 function renderSuiteConfig(config = {}) {
-  const typeInfo = suiteTypeConfig[suiteType.value] || suiteTypeConfig['seo-basic'];
+  const typeInfo = suiteTypeConfig[suiteType.value] || suiteTypeConfig.custom;
   const suiteLabel = t(typeInfo.labelKey, suiteType.value);
   const suiteHint = t(typeInfo.hintKey, '');
 
@@ -592,7 +657,7 @@ function renderSuiteConfig(config = {}) {
 }
 
 function setSuiteType(type, config = {}) {
-  suiteType.value = suiteTypeConfig[type] ? type : 'seo-basic';
+  suiteType.value = suiteTypeConfig[type] ? type : 'custom';
   renderSuiteConfig(config);
 }
 
@@ -611,7 +676,7 @@ function resetSuiteForm() {
   suiteDescription.value = '';
   suiteEnabled.checked = true;
   deleteSuiteButton.disabled = true;
-  setSuiteType('seo-basic');
+  setSuiteType('custom');
 }
 
 function resetCaseForm() {
@@ -643,7 +708,7 @@ function fillSuiteForm(suite) {
   suiteDescription.value = suite.description || '';
   suiteEnabled.checked = Boolean(suite.enabled);
   deleteSuiteButton.disabled = false;
-  setSuiteType(suite.type || 'seo-basic', suite.config || {});
+  setSuiteType(suite.type || 'custom', suite.config || {});
 }
 
 function fillCaseForm(testCase) {
@@ -1482,6 +1547,7 @@ function renderCaseSteps(testCase) {
 
 function renderGeneratedPlan(cases = []) {
   generatedPlan.innerHTML = '';
+  generatedPlan.classList.remove('is-loading');
   generatedPlan.classList.toggle('is-empty', !cases.length);
 
   if (!cases.length) {
@@ -1551,6 +1617,33 @@ function renderGeneratedPlan(cases = []) {
   });
 }
 
+function renderPlanLoading(title, detail) {
+  generatedPlan.innerHTML = `
+    <div class="space-empty loading-empty" aria-live="polite">
+      <span class="loading-spinner" aria-hidden="true"></span>
+      <strong>${escapeHtml(title || t('flow.loadingTitle', 'Preparing test cases'))}</strong>
+      <span>${escapeHtml(detail || t('flow.loadingText', 'AI is generating the plan and the browser run will stream cases here as they finish.'))}</span>
+      <span class="loading-lines" aria-hidden="true">
+        <i></i>
+        <i></i>
+        <i></i>
+      </span>
+    </div>
+  `;
+  generatedPlan.classList.add('is-empty', 'is-loading');
+}
+
+function renderAiExplanation(value = '') {
+  const text = typeof value === 'string' ? value.trim() : '';
+
+  if (!aiExplanationPanel || !aiExplanationText) {
+    return;
+  }
+
+  aiExplanationPanel.hidden = !text;
+  aiExplanationText.textContent = text;
+}
+
 function updateLatest(run) {
   if (!run) {
     return;
@@ -1561,7 +1654,15 @@ function updateLatest(run) {
   metricFailed.textContent = run.summary.failed;
   metricDuration.textContent = formatDuration(run.durationMs);
   latestTime.textContent = new Date(run.createdAt).toLocaleString();
-  renderGeneratedPlan(run.cases || []);
+  renderAiExplanation(run.aiExplanation || '');
+  if (isRunActive(run) && !(run.cases || []).length) {
+    renderPlanLoading(
+      statusText(run.status),
+      t('flow.runningText', 'The run is in progress. Generated cases will appear here as soon as they are available.')
+    );
+  } else {
+    renderGeneratedPlan(run.cases || []);
+  }
   setStatus(statusText(run.status), run.status);
 }
 
@@ -1603,6 +1704,10 @@ function compactErrorText(value) {
 }
 
 function getRunErrorReason(run) {
+  if (!['failed', 'cancelled', 'error'].includes(run?.status)) {
+    return '';
+  }
+
   return run?.errorReason || compactErrorText(run?.stderr) || compactErrorText(run?.stdout);
 }
 
@@ -1699,8 +1804,10 @@ async function pollRunUntilDone(runId) {
     await loadRuns();
 
     if (run.status === 'running') {
+      runButton.textContent = `${t('common.running', 'Running')}...`;
       setProgress('run', 70);
     } else if (run.status === 'queued') {
+      runButton.textContent = `${t('common.queued', 'Queued')}...`;
       setProgress('generate', 25);
     }
 
@@ -1717,6 +1824,11 @@ async function generateOnly() {
   generateButton.textContent = `${t('common.generating', 'Generating')}...`;
   runButton.textContent = t('common.pleaseWait', 'Please wait');
   refreshButton.textContent = t('common.pleaseWait', 'Please wait');
+  renderAiExplanation('');
+  renderPlanLoading(
+    t('flow.loadingTitle', 'Preparing test cases'),
+    t('flow.generateLoadingText', 'AI is creating the test cases and Playwright file. Controls are locked until it finishes.')
+  );
   setProgress('generate', 30);
 
   try {
@@ -1735,11 +1847,13 @@ async function generateOnly() {
     setProgress('save', 75);
     generatedCode.value = result.code;
     generatedPath.textContent = result.outputPath;
+    renderAiExplanation(result.aiExplanation || '');
     renderGeneratedPlan(result.cases || []);
     setStatus(t('common.generated', 'Generated'), 'passed');
     setProgress('store', 100);
   } catch (error) {
     generatedCode.value = error.message;
+    renderAiExplanation('');
     renderGeneratedPlan([]);
     setStatus(t('common.error', 'Error'), 'failed');
   } finally {
@@ -1753,6 +1867,11 @@ async function runTest() {
   runButton.textContent = `${t('common.queued', 'Queued')}...`;
   generateButton.textContent = t('common.pleaseWait', 'Please wait');
   refreshButton.textContent = t('common.pleaseWait', 'Please wait');
+  renderAiExplanation('');
+  renderPlanLoading(
+    t('flow.loadingTitle', 'Preparing test cases'),
+    t('flow.runLoadingText', 'AI is creating the suite. When Chromium starts, each case will appear here as it is generated or completed.')
+  );
   setProgress('generate', 15);
 
   try {
@@ -1772,7 +1891,6 @@ async function runTest() {
     setStatus(t('queue.queued', 'Run queued'), 'queued');
     setProgress('generate', 25);
     await loadRuns();
-    setBusy(false, systemStatus.textContent);
 
     const finalRun = await pollRunUntilDone(run.runId || run.id);
 
@@ -1780,10 +1898,12 @@ async function runTest() {
       generatedCode.value = finalRun.generatedCode;
     }
 
+    renderAiExplanation(finalRun.aiExplanation || '');
     renderGeneratedPlan(finalRun.cases || []);
     setProgress('store', 100);
   } catch (error) {
     generatedCode.value = error.message;
+    renderAiExplanation('');
     renderGeneratedPlan([]);
     setStatus(t('common.error', 'Error'), 'failed');
   } finally {
@@ -1809,7 +1929,15 @@ async function openRunDetail(runId) {
       ${run.targetName ? `<span>${escapeHtml(run.targetName)} (${escapeHtml(run.targetType || 'target')})</span>` : ''}
       <span>${new Date(run.createdAt).toLocaleString()}</span>
     `;
-    caseList.innerHTML = renderRunErrorNote(run);
+    caseList.innerHTML = `
+      ${run.aiExplanation ? `
+        <div class="ai-explanation-panel detail-ai-explanation">
+          <strong>${escapeHtml(t('flow.aiExplanationTitle', 'AI explanation'))}</strong>
+          <p>${escapeHtml(run.aiExplanation)}</p>
+        </div>
+      ` : ''}
+      ${renderRunErrorNote(run)}
+    `;
 
     if (!run.cases?.length) {
       caseList.innerHTML += `<p class="empty">${escapeHtml(t('detail.noStored', 'No case detail was stored for this run.'))}</p>`;
@@ -1848,6 +1976,7 @@ async function openRunDetail(runId) {
     setStatus(run.status === 'passed' ? t('common.passed', 'Passed') : t('common.failed', 'Failed'), run.status);
   } catch (error) {
     generatedCode.value = error.message;
+    renderAiExplanation('');
     renderGeneratedPlan([]);
     setStatus(t('common.error', 'Error'), 'failed');
   }
@@ -2041,7 +2170,7 @@ async function initApp() {
   renderTargets();
   renderSuites();
   renderCases();
-  setSuiteType('seo-basic');
+  setSuiteType('custom');
   await Promise.all([loadProjects(), loadRuns()]);
   updateSelectionSummary();
 }

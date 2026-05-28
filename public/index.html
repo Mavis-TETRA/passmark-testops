@@ -93,7 +93,7 @@
               <div class="field-grid">
                 <label>
                   <span data-i18n="projects.name">Project name</span>
-                  <input id="projectName" type="text" placeholder="Vietnix SEO" required>
+                  <input id="projectName" type="text" placeholder="Main Website QA" required>
                 </label>
                 <label>
                   <span data-i18n="projects.environment">Environment</span>
@@ -112,7 +112,7 @@
                   <textarea
                     id="projectDescription"
                     class="plain-textarea"
-                    placeholder="SEO testing project for main website"
+                    placeholder="Automation testing project for main website"
                     data-i18n-placeholder="projects.descriptionPlaceholder"
                   ></textarea>
                 </label>
@@ -212,26 +212,26 @@
               <div class="field-grid">
                 <label>
                   <span data-i18n="suite.name">Suite name</span>
-                  <input id="suiteName" type="text" placeholder="Basic SEO" required>
+                  <input id="suiteName" type="text" placeholder="Custom Website Checks" required>
                 </label>
                 <label>
                   <span data-i18n="suite.type">Type</span>
                   <select id="suiteType" class="hidden-select" aria-hidden="true" tabindex="-1">
+                    <option value="custom">Custom</option>
                     <option value="seo-basic">SEO Basic</option>
                     <option value="seo-technical">SEO Technical</option>
                     <option value="broken-links">Broken Links</option>
                     <option value="image-alt">Image Alt</option>
                     <option value="accessibility">Accessibility</option>
-                    <option value="custom">Custom</option>
                   </select>
                 </label>
                 <div class="suite-type-menu full-field" id="suiteTypeMenu">
+                  <button type="button" data-suite-type="custom">Custom</button>
                   <button type="button" data-suite-type="seo-basic">SEO Basic</button>
                   <button type="button" data-suite-type="seo-technical">SEO Technical</button>
                   <button type="button" data-suite-type="broken-links">Broken Links</button>
                   <button type="button" data-suite-type="image-alt">Image Alt</button>
                   <button type="button" data-suite-type="accessibility">Accessibility</button>
-                  <button type="button" data-suite-type="custom">Custom</button>
                 </div>
                 <label class="toggle-field">
                   <input id="suiteEnabled" type="checkbox" checked>
@@ -280,7 +280,7 @@
                 <div class="field-grid">
                   <label>
                     <span data-i18n="case.code">Code</span>
-                    <input id="caseCode" type="text" placeholder="SEO-008" required>
+                    <input id="caseCode" type="text" placeholder="CASE-001" required>
                   </label>
                   <label>
                     <span data-i18n="case.priority">Priority</span>
@@ -489,6 +489,10 @@
               </div>
               <button type="button" class="secondary compact-button" id="toggleCodeButton" data-i18n="flow.showCode">Show code</button>
             </div>
+            <div class="ai-explanation-panel" id="aiExplanationPanel" hidden>
+              <strong data-i18n="flow.aiExplanationTitle">AI explanation</strong>
+              <p id="aiExplanationText"></p>
+            </div>
             <div class="generated-plan" id="generatedPlan">
               <div class="space-empty">
                 <strong data-i18n="flow.emptyTitle">No rendered cases yet</strong>
@@ -497,7 +501,7 @@
             </div>
             <div class="code-panel" id="codePanel" hidden>
               <div class="code-panel-heading">
-                <span id="generatedPath">tests/generated-seo.spec.ts</span>
+                <span id="generatedPath">tests/generated-custom.spec.ts</span>
               </div>
               <textarea
                 id="generatedCode"
@@ -589,7 +593,7 @@
               <div class="docs-callout">
                 <strong data-i18n="docs.corePrincipleTitle">Nguyên tắc lõi</strong>
                 <p data-i18n="docs.corePrincipleText">
-                  Với SEO Basic, AI chỉ tạo test plan JSON. Backend validate plan và render Playwright code từ template ổn định, không để AI sinh raw TypeScript cho flow chính.
+                  Flow chính hiện dùng Custom suite: backend giao vai trò QA lead cho AI, tạo nhiều case rõ ràng, trả thêm phần giải thích và render Playwright spec an toàn.
                 </p>
               </div>
             </section>
@@ -630,7 +634,7 @@
               <ol class="docs-steps">
                 <li data-i18n="docs.userStepProject">Tạo Project: nhập tên, môi trường và Base URL mặc định.</li>
                 <li data-i18n="docs.userStepTarget">Tạo Test Target: khai báo nơi cần test như web-url, local-web, source-code hoặc api.</li>
-                <li data-i18n="docs.userStepSuite">Tạo Test Suite: chọn loại suite, hiện tại flow chính là SEO Basic.</li>
+                <li data-i18n="docs.userStepSuite">Tạo Test Suite: chọn loại suite, hiện tại flow chính là Custom.</li>
                 <li data-i18n="docs.userStepCase">Quản lý Test Case Library: bật/tắt case, sửa mô tả, priority và expected result.</li>
                 <li data-i18n="docs.userStepRun">Chạy test: chọn project, suite, target, nhập AI request nếu cần rồi bấm Run test.</li>
                 <li data-i18n="docs.userStepResult">Xem kết quả: theo dõi queued/running, xem Latest Result, AI Rendered Flow, code Playwright và Run History.</li>
@@ -774,7 +778,7 @@ LOCAL_AI_MODEL=your-local-ai-model</pre>
                 <li data-i18n="docs.ruleFrontendAi">Không để frontend gọi local AI trực tiếp.</li>
                 <li><span data-i18n="docs.ruleEnv">Không hardcode URL/key/model AI trong source code; luôn lấy từ</span> <code>.env</code>.</li>
                 <li data-i18n="docs.ruleSqlite">Không quay lại SQLite cho flow chính; SQLite chỉ là legacy migration.</li>
-                <li data-i18n="docs.ruleNoTs">Không để AI generate raw TypeScript cho SEO Basic.</li>
+                <li data-i18n="docs.ruleNoTs">Không để AI tạo test nguy hiểm, destructive, stress hoặc DDoS.</li>
                 <li data-i18n="docs.ruleRenderer">Giữ template renderer là nguồn tạo Playwright code ổn định.</li>
                 <li data-i18n="docs.ruleQueue">Queue hiện là in-memory, thiết kế để sau này nâng cấp Redis/BullMQ.</li>
               </ul>

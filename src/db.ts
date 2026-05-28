@@ -1,22 +1,15 @@
 import { PrismaClient } from '@prisma/client';
-import { SEO_BASIC_CASES } from './seo-cases';
 
 export const prisma = new PrismaClient({
   log: process.env.PRISMA_QUERY_LOG === 'true' ? ['query', 'warn', 'error'] : ['warn', 'error'],
 });
 
-const DEFAULT_PROJECT_ID = 'project-default-seo';
+const DEFAULT_PROJECT_ID = 'project-default-custom';
 const DEFAULT_ENVIRONMENT_ID = 'environment-default-production';
-const DEFAULT_SUITE_ID = 'suite-default-basic-seo';
+const DEFAULT_SUITE_ID = 'suite-default-custom';
 const DEFAULT_TARGET_ID = 'target-default-website';
-
-const SEO_BASIC_CONFIG = JSON.stringify({
-  checkTitle: true,
-  checkMetaDescription: true,
-  checkCanonical: true,
-  checkH1: true,
-  checkHtmlLang: true,
-  checkViewport: true,
+const DEFAULT_CUSTOM_CONFIG = JSON.stringify({
+  instruction: 'Create broad custom website checks from the suite description and run request.',
 });
 
 function createId(prefix: string): string {
@@ -31,35 +24,6 @@ function logDatabaseError(error: unknown) {
   console.error('[database] Unable to connect to PostgreSQL or apply the default seed data.');
   console.error('[database] Check DATABASE_URL and make sure PostgreSQL is running before starting Passmark TestOps.');
   console.error(error);
-}
-
-async function seedSeoCasesForSuite(suiteId: string) {
-  for (const testCase of SEO_BASIC_CASES) {
-    await prisma.testCase.upsert({
-      where: {
-        suiteId_code: {
-          suiteId,
-          code: testCase.code,
-        },
-      },
-      update: {
-        name: testCase.name,
-        description: testCase.description,
-        priority: testCase.priority,
-        expectedResult: testCase.expectedResult,
-      },
-      create: {
-        id: createId('case'),
-        suiteId,
-        code: testCase.code,
-        name: testCase.name,
-        description: testCase.description,
-        priority: testCase.priority,
-        enabled: true,
-        expectedResult: testCase.expectedResult,
-      },
-    });
-  }
 }
 
 async function ensureDefaultEnvironmentForProject(project: { id: string; baseUrl: string; environment: string }) {
@@ -136,8 +100,8 @@ export async function ensureDefaultData() {
       update: {},
       create: {
         id: DEFAULT_PROJECT_ID,
-        name: 'Default SEO Project',
-        description: 'Default project created for local AI SEO testing.',
+        name: 'Default Custom Project',
+        description: 'Default project created for local AI custom automation testing.',
         baseUrl: 'https://example.com/',
         environment: 'production',
       },
@@ -191,24 +155,22 @@ export async function ensureDefaultData() {
       where: { id: DEFAULT_SUITE_ID },
       update: {
         projectId: project.id,
-        name: 'Basic SEO',
-        type: 'seo-basic',
-        description: 'Stable SEO checks rendered from backend Playwright templates.',
+        name: 'Custom Website Checks',
+        type: 'custom',
+        description: 'Generate broad Playwright checks from the suite description and run request.',
         enabled: true,
-        config: SEO_BASIC_CONFIG,
+        config: DEFAULT_CUSTOM_CONFIG,
       },
       create: {
         id: DEFAULT_SUITE_ID,
         projectId: project.id,
-        name: 'Basic SEO',
-        type: 'seo-basic',
-        description: 'Stable SEO checks rendered from backend Playwright templates.',
+        name: 'Custom Website Checks',
+        type: 'custom',
+        description: 'Generate broad Playwright checks from the suite description and run request.',
         enabled: true,
-        config: SEO_BASIC_CONFIG,
+        config: DEFAULT_CUSTOM_CONFIG,
       },
     });
-
-    await seedSeoCasesForSuite(suite.id);
   } catch (error) {
     logDatabaseError(error);
     throw error;
@@ -219,13 +181,12 @@ export async function createDefaultSuiteForProject(projectId: string) {
   const existingSuite = await prisma.testSuite.findFirst({
     where: {
       projectId,
-      type: 'seo-basic',
+      type: 'custom',
     },
     orderBy: { createdAt: 'asc' },
   });
 
   if (existingSuite) {
-    await seedSeoCasesForSuite(existingSuite.id);
     return existingSuite;
   }
 
@@ -233,14 +194,13 @@ export async function createDefaultSuiteForProject(projectId: string) {
     data: {
       id: createId('suite'),
       projectId,
-      name: 'Basic SEO',
-      type: 'seo-basic',
-      description: 'Stable SEO checks rendered from backend Playwright templates.',
+      name: 'Custom Website Checks',
+      type: 'custom',
+      description: 'Generate broad Playwright checks from the suite description and run request.',
       enabled: true,
-      config: SEO_BASIC_CONFIG,
+      config: DEFAULT_CUSTOM_CONFIG,
     },
   });
 
-  await seedSeoCasesForSuite(suite.id);
   return suite;
 }

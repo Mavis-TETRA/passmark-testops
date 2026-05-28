@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { AuthConfig } from '../scripts/generate-seo-test';
+import { AuthConfig } from '../scripts/generate-playwright-test';
 import { SeoTestPlan } from './seo-test-plan';
 
 function codeString(value: string): string {
@@ -157,7 +157,7 @@ export function writeSeoBasicSpec(plan: SeoTestPlan, auth?: AuthConfig): {
   outputPath: string;
   code: string;
 } {
-  const outputPath = path.resolve(process.cwd(), 'tests/generated-seo.spec.ts');
+  const outputPath = path.resolve(process.cwd(), 'tests/generated-seo-basic.spec.ts');
   const code = renderSeoBasicSpec(plan, auth);
 
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });

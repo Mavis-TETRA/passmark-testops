@@ -14,7 +14,7 @@
     "db:sqlite:migrate-to-postgres": "tsx prisma/migrate-sqlite-to-postgres.ts",
     "test": "playwright test",
     "test:chromium": "playwright test --project=chromium",
-    "ai:seo": "tsx scripts/generate-seo-test.ts"
+    "ai:test": "tsx scripts/generate-playwright-test.ts"
   },
   "keywords": [],
   "author": "",

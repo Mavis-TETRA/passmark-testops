@@ -11,6 +11,7 @@ export type SeoTestPlanCase = {
 export type SeoTestPlan = {
   testType: 'seo-basic';
   url: string;
+  rationale: string;
   cases: SeoTestPlanCase[];
 };
 
@@ -41,6 +42,7 @@ export function createDefaultSeoPlan(url: string, cases: PlanInputCase[]): SeoTe
   return {
     testType: 'seo-basic',
     url,
+    rationale: 'Using the enabled SEO Basic library cases so the run covers page availability, metadata, canonical URL, heading, language, and viewport signals.',
     cases: enabledCases
       .filter((testCase) => testCase.enabled)
       .map((testCase) => {
@@ -111,6 +113,9 @@ export function validateSeoPlan(value: unknown, url: string, fallbackCases: Plan
   return {
     testType: 'seo-basic',
     url,
+    rationale: typeof candidate.rationale === 'string' && candidate.rationale.trim()
+      ? candidate.rationale.trim()
+      : defaultPlan.rationale,
     cases,
   };
 }
@@ -123,6 +128,7 @@ export async function generateSeoTestPlan(
   plan: SeoTestPlan;
   aiPrompt: string;
   aiResponse: string;
+  aiExplanation: string;
   aiStatus: 'passed' | 'fallback';
   durationMs: number;
 }> {
@@ -131,7 +137,7 @@ export async function generateSeoTestPlan(
     .map((testCase) => `${testCase.code}: ${testCase.name} (${testCase.priority})`)
     .join('\n');
   const aiPrompt = `
-Return only JSON. No markdown. No explanation.
+Return only JSON. No markdown outside JSON.
 
 Create a seo-basic test plan for this URL:
 ${url}
@@ -146,6 +152,7 @@ Use this exact JSON shape:
 {
   "testType": "seo-basic",
   "url": "${url}",
+  "rationale": "Explain briefly why these cases cover the request.",
   "cases": [
     {
       "code": "SEO-001",
@@ -160,6 +167,7 @@ Rules:
 - Only use available case codes.
 - Prefer enabled true for relevant cases.
 - Do not generate TypeScript.
+- Keep rationale concise, specific, and useful for a tester reviewing the generated cases.
 `;
 
   try {
@@ -170,19 +178,24 @@ Rules:
       },
     ]);
     const parsed = JSON.parse(stripJsonFence(aiResponse));
+    const plan = validateSeoPlan(parsed, url, cases);
 
     return {
-      plan: validateSeoPlan(parsed, url, cases),
+      plan,
       aiPrompt,
       aiResponse,
+      aiExplanation: plan.rationale,
       aiStatus: 'passed',
       durationMs: Date.now() - startedAt,
     };
   } catch (error) {
+    const fallbackPlan = createDefaultSeoPlan(url, cases);
+
     return {
-      plan: createDefaultSeoPlan(url, cases),
+      plan: fallbackPlan,
       aiPrompt,
       aiResponse: error instanceof Error ? error.message : String(error),
+      aiExplanation: fallbackPlan.rationale,
       aiStatus: 'fallback',
       durationMs: Date.now() - startedAt,
     };
