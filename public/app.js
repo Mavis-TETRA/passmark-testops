@@ -57,6 +57,9 @@ const targetType = document.querySelector('#targetType');
 const targetUrl = document.querySelector('#targetUrl');
 const targetLocalPath = document.querySelector('#targetLocalPath');
 const targetConfig = document.querySelector('#targetConfig');
+const targetConfigGuide = document.querySelector('#targetConfigGuide');
+const targetConfigTemplateButton = document.querySelector('#targetConfigTemplateButton');
+const targetConfigFormatButton = document.querySelector('#targetConfigFormatButton');
 const targetEnabled = document.querySelector('#targetEnabled');
 const targetUrlField = document.querySelector('.target-url-field');
 const targetPathField = document.querySelector('.target-path-field');
@@ -68,6 +71,7 @@ const generateButton = document.querySelector('#generateButton');
 const refreshButton = document.querySelector('#refreshButton');
 const actionMenu = document.querySelector('#actionMenu');
 const systemStatus = document.querySelector('#systemStatus');
+const systemStatusDetail = document.querySelector('#systemStatusDetail');
 const authMode = document.querySelector('#authMode');
 const authFields = document.querySelector('#authFields');
 const loginUrl = document.querySelector('#loginUrl');
@@ -149,6 +153,7 @@ const pageState = {
   current: 'run',
 };
 let runControlsLocked = false;
+const openPlanCardKeys = new Set();
 const runLockControls = [
   projectSelect,
   suiteSelect,
@@ -268,6 +273,10 @@ function applyTranslations() {
     element.placeholder = t(element.dataset.i18nPlaceholder, element.placeholder);
   }
 
+  for (const element of document.querySelectorAll('[data-i18n-title]')) {
+    element.title = t(element.dataset.i18nTitle, element.title);
+  }
+
   for (const switcher of languageSwitchers) {
     for (const button of switcher.querySelectorAll('[data-lang]')) {
       button.classList.toggle('active', button.dataset.lang === i18nState.lang);
@@ -338,7 +347,16 @@ function setBusy(isBusy, label = t('app.status.ready', 'Ready')) {
   runControlsLocked = isBusy;
   setRunControlsLocked(isBusy);
   systemStatus.textContent = label;
-  systemStatus.className = `status-pill${isBusy ? ' busy' : ''}`;
+  if (isBusy) {
+    systemStatus.className = 'status-pill busy';
+  } else if (label === t('app.status.ready', 'Ready')) {
+    systemStatus.className = 'status-pill';
+  }
+  if (isBusy) {
+    setStatusDetail(t('app.status.busyDetail', 'Working on the current run.'));
+  } else if (label === t('app.status.ready', 'Ready')) {
+    setStatusDetail('');
+  }
 
   if (!isBusy) {
     runButton.textContent = defaultButtonLabels.run;
@@ -385,6 +403,16 @@ function setRunControlsLocked(isLocked) {
 function setStatus(label, state) {
   systemStatus.textContent = label;
   systemStatus.className = `status-pill ${state}`;
+}
+
+function setStatusDetail(message = '') {
+  if (!systemStatusDetail) {
+    return;
+  }
+
+  systemStatusDetail.hidden = !message;
+  systemStatusDetail.textContent = message;
+  systemStatusDetail.title = systemStatusDetail.textContent;
 }
 
 function setProgress(activeStep, percent) {
@@ -474,6 +502,39 @@ function isRunActive(run) {
   return ['queued', 'running'].includes(run?.status);
 }
 
+function describeRunActivity(run) {
+  if (!run) {
+    return t('app.status.readyDetail', 'Idle. Choose a target and run a test.');
+  }
+
+  const cases = Array.isArray(run.cases) ? run.cases : [];
+  const total = run.summary?.total || cases.length || 0;
+  const passed = run.summary?.passed || cases.filter((testCase) => testCase.status === 'passed').length;
+  const failed = run.summary?.failed || cases.filter((testCase) => testCase.status === 'failed').length;
+  const running = cases.filter((testCase) => testCase.status === 'running').length;
+  const pending = cases.filter((testCase) => testCase.status === 'pending').length;
+  const done = Math.min(total, passed + failed);
+
+  if (run.status === 'queued') {
+    return t('app.status.queuedDetail', 'Queued. Waiting for the worker to start.');
+  }
+
+  if (run.status === 'running') {
+    if (!total) {
+      return t('app.status.generatingDetail', 'Generating the Playwright spec and preparing cases.');
+    }
+
+    return t('app.status.runningDetail', 'Running Chromium: {done}/{total} done, {running} running, {pending} pending.', {
+      done,
+      total,
+      running,
+      pending,
+    });
+  }
+
+  return '';
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -555,6 +616,81 @@ function getSelectedTarget() {
 
 function targetTypeLabel(type) {
   return t(`target.type.${type === 'web-url' ? 'webUrl' : type === 'local-web' ? 'localWeb' : type === 'source-code' ? 'sourceCode' : 'api'}`, type);
+}
+
+function targetConfigTemplate(type = targetType.value) {
+  const templates = {
+    'web-url': {
+      notes: 'Public or staging website target.',
+      tags: ['web', 'browser'],
+      headers: {},
+    },
+    'local-web': {
+      notes: 'Local app target. Start the dev server before running tests.',
+      tags: ['local', 'browser'],
+      healthPath: '/',
+    },
+    api: {
+      notes: 'API target placeholder for future API runner support.',
+      tags: ['api'],
+      headers: {
+        Accept: 'application/json',
+      },
+    },
+    'source-code': {
+      notes: 'Source-code target placeholder for future source scan support.',
+      tags: ['source'],
+      include: ['src/**/*'],
+      exclude: ['node_modules/**', 'dist/**'],
+    },
+  };
+
+  return templates[type] || templates['web-url'];
+}
+
+function targetConfigGuideKey(type = targetType.value) {
+  if (type === 'local-web') {
+    return 'target.configGuide.localWeb';
+  }
+
+  if (type === 'api') {
+    return 'target.configGuide.api';
+  }
+
+  if (type === 'source-code') {
+    return 'target.configGuide.sourceCode';
+  }
+
+  return 'target.configGuide.webUrl';
+}
+
+function isBlankTargetConfig() {
+  const text = targetConfig.value.trim();
+  return !text || text === '{}';
+}
+
+function updateTargetConfigGuide() {
+  if (targetConfigGuide) {
+    targetConfigGuide.textContent = t(targetConfigGuideKey(), 'Optional. Keep empty unless this target needs headers, tags, or notes.');
+  }
+
+  if (isBlankTargetConfig()) {
+    targetConfig.placeholder = JSON.stringify(targetConfigTemplate(), null, 2);
+  }
+}
+
+function fillTargetConfigTemplate() {
+  targetConfig.value = JSON.stringify(targetConfigTemplate(), null, 2);
+  targetConfig.focus();
+}
+
+function formatTargetConfig() {
+  try {
+    targetConfig.value = JSON.stringify(readTargetConfig(), null, 2);
+    setStatus(t('target.configFormatted', 'Target config formatted'), 'passed');
+  } catch {
+    setStatus(t('target.invalidConfig', 'Target config must be valid JSON'), 'failed');
+  }
 }
 
 function targetUsesUrl(target) {
@@ -740,6 +876,7 @@ function updateTargetTypeFields() {
   targetPathField.hidden = !isSourceCode;
   targetUrl.required = !isSourceCode;
   targetLocalPath.required = isSourceCode;
+  updateTargetConfigGuide();
 }
 
 function fillProjectForm(project) {
@@ -1545,6 +1682,11 @@ function renderCaseSteps(testCase) {
   `;
 }
 
+function planCaseKey(testCase, index) {
+  const code = (testCase.title || '').match(/\b[A-Z]+-\d+\b/)?.[0];
+  return `${code || String(index + 1)}:${testCase.title || ''}`;
+}
+
 function renderGeneratedPlan(cases = []) {
   generatedPlan.innerHTML = '';
   generatedPlan.classList.remove('is-loading');
@@ -1561,10 +1703,12 @@ function renderGeneratedPlan(cases = []) {
   }
 
   cases.forEach((testCase, index) => {
+    const key = planCaseKey(testCase, index);
     const item = document.createElement('article');
-    item.className = 'plan-card';
+    item.className = `plan-card${openPlanCardKeys.has(key) ? ' open' : ''}`;
     item.tabIndex = 0;
     item.testCase = testCase;
+    item.dataset.caseKey = key;
     item.style.setProperty('--float-index', String(index % 6));
     item.innerHTML = `
       <span class="plan-main">
@@ -1589,7 +1733,13 @@ function renderGeneratedPlan(cases = []) {
       const detail = item.querySelector('.plan-detail');
       const isOpen = item.classList.toggle('open');
       detail.hidden = !isOpen;
+      if (isOpen) {
+        openPlanCardKeys.add(key);
+      } else {
+        openPlanCardKeys.delete(key);
+      }
     };
+    item.querySelector('.plan-detail').hidden = !openPlanCardKeys.has(key);
     item.addEventListener('click', (event) => {
       const factButton = event.target.closest('.case-fact');
 
@@ -1664,6 +1814,7 @@ function updateLatest(run) {
     renderGeneratedPlan(run.cases || []);
   }
   setStatus(statusText(run.status), run.status);
+  setStatusDetail(describeRunActivity(run));
 }
 
 function getRunTitle(run) {
@@ -1805,9 +1956,11 @@ async function pollRunUntilDone(runId) {
 
     if (run.status === 'running') {
       runButton.textContent = `${t('common.running', 'Running')}...`;
+      setStatusDetail(describeRunActivity(run));
       setProgress('run', 70);
     } else if (run.status === 'queued') {
       runButton.textContent = `${t('common.queued', 'Queued')}...`;
+      setStatusDetail(describeRunActivity(run));
       setProgress('generate', 25);
     }
 
@@ -1821,9 +1974,11 @@ async function pollRunUntilDone(runId) {
 
 async function generateOnly() {
   setBusy(true, t('common.generating', 'Generating'));
+  openPlanCardKeys.clear();
   generateButton.textContent = `${t('common.generating', 'Generating')}...`;
   runButton.textContent = t('common.pleaseWait', 'Please wait');
   refreshButton.textContent = t('common.pleaseWait', 'Please wait');
+  setStatusDetail(t('app.status.generatingDetail', 'Generating the Playwright spec and preparing cases.'));
   renderAiExplanation('');
   renderPlanLoading(
     t('flow.loadingTitle', 'Preparing test cases'),
@@ -1850,6 +2005,7 @@ async function generateOnly() {
     renderAiExplanation(result.aiExplanation || '');
     renderGeneratedPlan(result.cases || []);
     setStatus(t('common.generated', 'Generated'), 'passed');
+    setStatusDetail('');
     setProgress('store', 100);
   } catch (error) {
     generatedCode.value = error.message;
@@ -1864,9 +2020,11 @@ async function generateOnly() {
 
 async function runTest() {
   setBusy(true, t('common.queued', 'Queued'));
+  openPlanCardKeys.clear();
   runButton.textContent = `${t('common.queued', 'Queued')}...`;
   generateButton.textContent = t('common.pleaseWait', 'Please wait');
   refreshButton.textContent = t('common.pleaseWait', 'Please wait');
+  setStatusDetail(t('app.status.queuedDetail', 'Queued. Waiting for the worker to start.'));
   renderAiExplanation('');
   renderPlanLoading(
     t('flow.loadingTitle', 'Preparing test cases'),
@@ -2090,6 +2248,8 @@ document.addEventListener('keydown', (event) => {
   }
 });
 targetType.addEventListener('change', updateTargetTypeFields);
+targetConfigTemplateButton.addEventListener('click', fillTargetConfigTemplate);
+targetConfigFormatButton.addEventListener('click', formatTargetConfig);
 suiteTypeMenu.addEventListener('click', (event) => {
   const button = event.target.closest('button[data-suite-type]');
 

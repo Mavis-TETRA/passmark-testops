@@ -54,16 +54,7 @@
         <section class="sidebar-status">
           <p class="eyebrow" data-i18n="settings.status">System status</p>
           <span class="status-pill" id="systemStatus" data-i18n="app.status.ready">Ready</span>
-        </section>
-        <section class="guide-card">
-          <p class="eyebrow" data-i18n="guide.eyebrow">Quick flow</p>
-          <h2 data-i18n="guide.title">How to run a test</h2>
-          <ol>
-            <li data-i18n="guide.stepProject">Choose or create a project.</li>
-            <li data-i18n="guide.stepSuite">Pick the suite that matches your goal.</li>
-            <li data-i18n="guide.stepRequest">Describe extra checks in AI request if needed.</li>
-            <li data-i18n="guide.stepRun">Click Run test and review results.</li>
-          </ol>
+          <small class="status-detail" id="systemStatusDetail" hidden></small>
         </section>
       </aside>
       <section class="workspace">
@@ -92,11 +83,17 @@
               <input id="projectId" type="hidden">
               <div class="field-grid">
                 <label>
-                  <span data-i18n="projects.name">Project name</span>
+                  <span class="field-title">
+                    <span data-i18n="projects.name">Project name</span>
+                    <span class="help-tip" tabindex="0" data-i18n-title="help.projectName" title="A readable name for this workspace project.">?</span>
+                  </span>
                   <input id="projectName" type="text" placeholder="Main Website QA" required>
                 </label>
                 <label>
-                  <span data-i18n="projects.environment">Environment</span>
+                  <span class="field-title">
+                    <span data-i18n="projects.environment">Environment</span>
+                    <span class="help-tip" tabindex="0" data-i18n-title="help.projectEnvironment" title="Marks whether this project is dev, staging, or production.">?</span>
+                  </span>
                   <select id="projectEnvironment">
                     <option value="dev">Dev</option>
                     <option value="staging">Staging</option>
@@ -104,11 +101,17 @@
                   </select>
                 </label>
                 <label class="full-field">
-                  <span data-i18n="projects.baseUrl">Base URL</span>
+                  <span class="field-title">
+                    <span data-i18n="projects.baseUrl">Base URL</span>
+                    <span class="help-tip" tabindex="0" data-i18n-title="help.projectBaseUrl" title="Default URL used when no target is selected.">?</span>
+                  </span>
                   <input id="projectBaseUrl" type="url" placeholder="https://example.com/" required>
                 </label>
                 <label class="full-field">
-                  <span data-i18n="projects.description">Description</span>
+                  <span class="field-title">
+                    <span data-i18n="projects.description">Description</span>
+                    <span class="help-tip" tabindex="0" data-i18n-title="help.projectDescription" title="Notes for the tester or AI context.">?</span>
+                  </span>
                   <textarea
                     id="projectDescription"
                     class="plain-textarea"
@@ -146,11 +149,17 @@
               <input id="targetId" type="hidden">
               <div class="field-grid">
                 <label>
-                  <span data-i18n="target.name">Target name</span>
+                  <span class="field-title">
+                    <span data-i18n="target.name">Target name</span>
+                    <span class="help-tip" tabindex="0" data-i18n-title="help.targetName" title="Name shown in dropdowns and run history.">?</span>
+                  </span>
                   <input id="targetName" type="text" placeholder="Production website" required>
                 </label>
                 <label>
-                  <span data-i18n="target.type">Target type</span>
+                  <span class="field-title">
+                    <span data-i18n="target.type">Target type</span>
+                    <span class="help-tip" tabindex="0" data-i18n-title="help.targetType" title="Choose what kind of system this target points to.">?</span>
+                  </span>
                   <select id="targetType">
                     <option value="web-url" data-i18n="target.type.webUrl">Web URL</option>
                     <option value="local-web" data-i18n="target.type.localWeb">Local web</option>
@@ -159,11 +168,17 @@
                   </select>
                 </label>
                 <label class="full-field target-url-field">
-                  <span data-i18n="target.url">Target URL</span>
+                  <span class="field-title">
+                    <span data-i18n="target.url">Target URL</span>
+                    <span class="help-tip" tabindex="0" data-i18n-title="help.targetUrl" title="The URL Playwright opens when running tests.">?</span>
+                  </span>
                   <input id="targetUrl" type="url" placeholder="https://example.com/">
                 </label>
                 <label class="full-field target-path-field">
-                  <span data-i18n="target.localPath">Local path</span>
+                  <span class="field-title">
+                    <span data-i18n="target.localPath">Local path</span>
+                    <span class="help-tip" tabindex="0" data-i18n-title="help.targetLocalPath" title="Source folder path for future source-code scans.">?</span>
+                  </span>
                   <input id="targetLocalPath" type="text" placeholder="D:\Work\project">
                 </label>
                 <label class="toggle-field">
@@ -174,13 +189,26 @@
                   </span>
                 </label>
                 <label class="full-field">
-                  <span data-i18n="target.config">Config JSON</span>
+                  <span class="field-title">
+                    <span data-i18n="target.config">Config JSON</span>
+                    <span class="help-tip" tabindex="0" data-i18n-title="help.targetConfig" title="Optional JSON settings for this target type. Use the helper buttons below if unsure.">?</span>
+                  </span>
                   <textarea
                     id="targetConfig"
                     class="plain-textarea"
                     placeholder="{}"
                   ></textarea>
                 </label>
+                <div class="target-config-helper full-field">
+                  <div>
+                    <strong data-i18n="target.configHelperTitle">Target config helper</strong>
+                    <p id="targetConfigGuide" data-i18n="target.configGuide.webUrl">Optional. Keep empty unless this target needs headers, tags, or notes.</p>
+                  </div>
+                  <div class="config-helper-actions">
+                    <button type="button" class="secondary compact-button" id="targetConfigTemplateButton" data-i18n="target.fillTemplate">Fill suggested config</button>
+                    <button type="button" class="secondary compact-button" id="targetConfigFormatButton" data-i18n="target.formatJson">Format JSON</button>
+                  </div>
+                </div>
               </div>
               <div class="button-row">
                 <button type="submit" id="saveTargetButton" data-i18n="target.save">Save target</button>
@@ -409,7 +437,10 @@
             </div>
           </section>
 
-          <label for="siteUrl" data-i18n="run.websiteUrl">Website URL</label>
+          <label for="siteUrl">
+            <span data-i18n="run.websiteUrl">Website URL</span>
+            <span class="help-tip" tabindex="0" data-i18n-title="help.siteUrl" title="The final URL used for this run. Selecting a target fills this automatically.">?</span>
+          </label>
           <div class="url-row">
             <input
               id="siteUrl"
@@ -421,7 +452,10 @@
             >
           </div>
 
-          <label class="prompt-label" for="aiRequest" data-i18n="run.aiRequest">What do you want to test?</label>
+          <label class="prompt-label" for="aiRequest">
+            <span data-i18n="run.aiRequest">What do you want to test?</span>
+            <span class="help-tip" tabindex="0" data-i18n-title="help.aiRequest" title="Describe the risks or areas AI should cover. Leave blank for the suite defaults.">?</span>
+          </label>
           <div class="prompt-row">
             <textarea
               id="aiRequest"
@@ -696,15 +730,14 @@
             </section>
 
             <section class="docs-section">
-              <h2 data-i18n="docs.seoTitle">6. SEO Basic Cases mặc định</h2>
+              <h2 data-i18n="docs.seoTitle">6. Custom AI case strategy</h2>
               <div class="docs-case-list">
-                <span>SEO-001 Page loads successfully</span>
-                <span>SEO-002 Title exists</span>
-                <span>SEO-003 Meta description exists</span>
-                <span>SEO-004 Canonical URL exists</span>
-                <span>SEO-005 Exactly one H1 exists</span>
-                <span>SEO-006 HTML lang exists</span>
-                <span>SEO-007 Viewport meta exists</span>
+                <span data-i18n="docs.customCaseEstimate">AI estimates the needed case count first.</span>
+                <span data-i18n="docs.customCasePlan">AI plans focused case ideas for that count.</span>
+                <span data-i18n="docs.customCaseCode">Backend asks AI for safe Playwright code.</span>
+                <span data-i18n="docs.customCaseFallback">Fallback still respects the estimated count.</span>
+                <span data-i18n="docs.customCaseProgress">Run results stream case by case while polling.</span>
+                <span data-i18n="docs.customCaseRead">Finished cases can be opened while the run continues.</span>
               </div>
               <p data-i18n="docs.seoEnabledText">Run flow chỉ chạy các test case đang enabled. Riêng SEO Basic vẫn giữ đủ enabled cases từ thư viện case, không để AI cắt bớt.</p>
             </section>
