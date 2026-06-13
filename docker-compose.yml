@@ -15,17 +15,64 @@ services:
       timeout: 5s
       retries: 10
 
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ./storage/ollama:/root/.ollama
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_KEEP_ALIVE: "2m"
+      OLLAMA_LOAD_TIMEOUT: "5m"
+      CUDA_VISIBLE_DEVICES: ""
+      NVIDIA_VISIBLE_DEVICES: "none"
+    mem_limit: 4g
+    memswap_limit: 4g
+    cpus: "2.0"
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+
+  ollama-model:
+    image: ollama/ollama:latest
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    command: ["pull", "qwen2.5-coder:0.5b"]
+    restart: "no"
+    mem_limit: 1g
+    memswap_limit: 1g
+    cpus: "1.0"
+
   app:
     build: .
     depends_on:
       postgres:
         condition: service_healthy
+      ollama:
+        condition: service_healthy
+      ollama-model:
+        condition: service_completed_successfully
     environment:
       PORT: 5000
       DATABASE_URL: postgresql://passmark:passmark@postgres:5432/passmark
-      LOCAL_AI_BASE_URL: ${LOCAL_AI_BASE_URL:?LOCAL_AI_BASE_URL is required}
-      LOCAL_AI_API_KEY: ${LOCAL_AI_API_KEY:?LOCAL_AI_API_KEY is required}
-      LOCAL_AI_MODEL: ${LOCAL_AI_MODEL:?LOCAL_AI_MODEL is required}
+      LOCAL_AI_PROVIDER: ollama
+      LOCAL_AI_BASE_URL: http://ollama:11434
+      LOCAL_AI_API_KEY: ollama
+      LOCAL_AI_MODEL: qwen2.5-coder:0.5b
+      LOCAL_AI_TIMEOUT_MS: 120000
+      LOCAL_AI_MAX_TOKENS: 1536
+      LOCAL_AI_CONTEXT_TOKENS: 2048
+      LOCAL_AI_NUM_THREAD: 2
+      LOCAL_AI_TEMPERATURE: 0.2
+      LOCAL_AI_KEEP_ALIVE: 2m
     ports:
       - "5000:5000"
     volumes:
