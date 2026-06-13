@@ -2,6 +2,9 @@ const form = document.querySelector('#testForm');
 const projectForm = document.querySelector('#projectForm');
 const projectList = document.querySelector('#projectList');
 const sidebarProjectList = document.querySelector('#sidebarProjectList');
+const newSidebarProjectButton = document.querySelector('#newSidebarProjectButton');
+const newSidebarItemButton = document.querySelector('#newSidebarItemButton');
+const workspaceTitle = document.querySelector('#workspaceTitle');
 const projectSearch = document.querySelector('#projectSearch');
 const projectCount = document.querySelector('#projectCount');
 const projectSelect = document.querySelector('#projectSelect');
@@ -101,6 +104,8 @@ const progressBar = document.querySelector('#progressBar');
 const stepsList = document.querySelector('#stepsList');
 const generateCaseFileButton = document.querySelector('#generateCaseFileButton');
 const downloadCaseFileLink = document.querySelector('#downloadCaseFileLink');
+const downloadCaseExcelLink = document.querySelector('#downloadCaseExcelLink');
+const downloadCaseDocLink = document.querySelector('#downloadCaseDocLink');
 const caseFileInput = document.querySelector('#caseFileInput');
 const runImportedFileButton = document.querySelector('#runImportedFileButton');
 const testcaseFileMeta = document.querySelector('#testcaseFileMeta');
@@ -151,6 +156,9 @@ const suiteState = {
   selectedId: '',
   query: '',
 };
+const sidebarState = {
+  suitesByProject: {},
+};
 const caseState = {
   cases: [],
   selectedId: '',
@@ -170,6 +178,8 @@ const testcaseFileState = {
   csvContent: '',
   fileName: '',
   downloadUrl: '',
+  excelDownloadUrl: '',
+  docDownloadUrl: '',
   rows: [],
 };
 const runModeState = {
@@ -339,6 +349,7 @@ function refreshLocalizedUi() {
   }
 
   updateSelectionSummary();
+  updateWorkspaceTitle();
 }
 
 function showPage(page, options = {}) {
@@ -373,6 +384,8 @@ function showPage(page, options = {}) {
   if (options.updateHash !== false) {
     history.replaceState(null, '', `#${nextPage}`);
   }
+
+  updateWorkspaceTitle();
 }
 
 function setBusy(isBusy, label = t('app.status.ready', 'Ready')) {
@@ -503,6 +516,10 @@ function statusText(status) {
     return t('common.queued', 'Queued');
   }
 
+  if (status === 'generated') {
+    return t('common.generated', 'Generated');
+  }
+
   if (status === 'running') {
     return t('common.running', 'Running');
   }
@@ -524,6 +541,64 @@ function statusText(status) {
   }
 
   return status || '';
+}
+
+function runKindLabel(run = {}) {
+  return run.historyKind === 'testcase-file' || run.status === 'generated'
+    ? t('history.kindTestcaseFile', 'Testcase file')
+    : t('history.kindAutoTest', 'Auto test');
+}
+
+function historyMetricText(run = {}) {
+  if (run.historyKind === 'testcase-file' || run.status === 'generated') {
+    return t('history.generatedSummary', '{total} test cases - not run yet', {
+      total: run.summary?.total || 0,
+    });
+  }
+
+  return t('history.passedSummary', '{passed}/{total} passed - {duration}', {
+    passed: run.summary?.passed || 0,
+    total: run.summary?.total || 0,
+    duration: formatDuration(run.durationMs),
+  });
+}
+
+function renderDownloadGroup(title, links = []) {
+  const visibleLinks = links.filter((link) => link.href);
+
+  if (!visibleLinks.length) {
+    return '';
+  }
+
+  return `
+    <span class="download-group">
+      <strong>${escapeHtml(title)}</strong>
+      ${visibleLinks.map((link) => `
+        <a class="secondary file-download" href="${escapeHtml(link.href)}">${escapeHtml(link.label)}</a>
+      `).join('')}
+    </span>
+  `;
+}
+
+function renderHistoryQuickDownloads(run = {}) {
+  const links = [
+    { href: run.testcaseExcelUrl, label: t('fileFlow.downloadSourceExcel', 'Source Excel') },
+    { href: run.testcaseDocUrl, label: t('fileFlow.downloadSourceDoc', 'Source Word') },
+    { href: run.testcaseCsvUrl, label: t('fileFlow.downloadSourceCsv', 'Source CSV') },
+  ].filter((link) => link.href);
+
+  if (!links.length) {
+    return '';
+  }
+
+  return `
+    <span class="history-actions" aria-label="${escapeHtml(t('history.downloadTestcase', 'Download testcase file'))}">
+      <strong>${escapeHtml(t('history.downloadTestcase', 'Download testcase'))}</strong>
+      ${links.map((link) => `
+        <a class="file-download compact" href="${escapeHtml(link.href)}">${escapeHtml(link.label)}</a>
+      `).join('')}
+    </span>
+  `;
 }
 
 function compactEnvironmentLabel(value = '') {
@@ -653,6 +728,28 @@ function getSelectedProject() {
 
 function getSelectedSuite() {
   return suiteState.suites.find((suite) => suite.id === suiteState.selectedId);
+}
+
+function getSidebarSuites(projectIdValue) {
+  return sidebarState.suitesByProject[projectIdValue] || [];
+}
+
+function getWorkspaceTitle() {
+  const suite = getSelectedSuite();
+  const project = getSelectedProject();
+  return suite?.name || project?.name || t('top.project', 'Passmark TestOps');
+}
+
+function updateWorkspaceTitle() {
+  if (workspaceTitle) {
+    workspaceTitle.textContent = getWorkspaceTitle();
+  }
+
+  document.body.dataset.workspaceItem = suiteState.selectedId
+    ? 'suite'
+    : projectState.selectedId
+      ? 'project'
+      : 'none';
 }
 
 function getSelectedCase() {
@@ -959,6 +1056,8 @@ function selectProject(projectIdValue) {
     renderSuites();
     renderCases();
     resetProjectForm();
+    renderProjects();
+    updateWorkspaceTitle();
     return;
   }
 
@@ -967,6 +1066,11 @@ function selectProject(projectIdValue) {
   fillProjectForm(project);
   projectSelectedMeta.textContent = `${project.environment.toUpperCase()} | ${project.baseUrl}`;
   renderProjects();
+  updateWorkspaceTitle();
+  loadRuns().catch((error) => {
+    generatedCode.value = error.message;
+    setStatus(t('common.error', 'Error'), 'failed');
+  });
   loadSuites(project.id).catch((error) => {
     generatedCode.value = error.message;
     setStatus(t('common.error', 'Error'), 'failed');
@@ -975,6 +1079,113 @@ function selectProject(projectIdValue) {
     generatedCode.value = error.message;
     setStatus(t('common.error', 'Error'), 'failed');
   });
+}
+
+async function loadSidebarSuites() {
+  if (!projectState.projects.length) {
+    sidebarState.suitesByProject = {};
+    return;
+  }
+
+  const entries = await Promise.all(
+    projectState.projects.map(async (project) => {
+      try {
+        const suites = await requestJson(`/api/test-suites?projectId=${encodeURIComponent(project.id)}`);
+        return [project.id, suites];
+      } catch {
+        return [project.id, []];
+      }
+    })
+  );
+
+  sidebarState.suitesByProject = Object.fromEntries(entries);
+}
+
+function renderSidebarWorkspace() {
+  if (!sidebarProjectList) {
+    return;
+  }
+
+  sidebarProjectList.innerHTML = '';
+
+  if (!projectState.projects.length) {
+    sidebarProjectList.innerHTML = `<span>${escapeHtml(t('projects.empty', 'No projects yet.'))}</span>`;
+    return;
+  }
+
+  for (const project of projectState.projects) {
+    const group = document.createElement('section');
+    group.className = `sidebar-project-group${project.id === projectState.selectedId ? ' active' : ''}`;
+
+    const header = document.createElement('div');
+    header.className = 'sidebar-project-header';
+    header.innerHTML = `
+      <button type="button" class="sidebar-project-main">
+        <span class="sidebar-folder-icon" aria-hidden="true"></span>
+        <span>
+          <strong>${escapeHtml(project.name)}</strong>
+          <small>${escapeHtml(compactEnvironmentLabel(project.environment || project.baseUrl))}</small>
+        </span>
+      </button>
+      <span class="sidebar-row-actions">
+        <button type="button" class="sidebar-icon-action" data-action="add-suite" title="${escapeHtml(t('sidebar.addItem', 'Add item'))}">+</button>
+        <button type="button" class="sidebar-icon-action danger" data-action="delete-project" title="${escapeHtml(t('projects.delete', 'Delete project'))}">×</button>
+      </span>
+    `;
+
+    header.querySelector('.sidebar-project-main').addEventListener('click', () => {
+      selectProject(project.id);
+      showPage('run');
+    });
+    header.querySelector('[data-action="add-suite"]').addEventListener('click', (event) => {
+      event.stopPropagation();
+      createSidebarSuite(project.id);
+    });
+    header.querySelector('[data-action="delete-project"]').addEventListener('click', (event) => {
+      event.stopPropagation();
+      deleteProjectById(project.id);
+    });
+    group.appendChild(header);
+
+    if (project.id === projectState.selectedId) {
+      const list = document.createElement('div');
+      list.className = 'sidebar-thread-list';
+      const suites = getSidebarSuites(project.id);
+
+      if (!suites.length) {
+        list.innerHTML = `<span class="sidebar-empty-thread">${escapeHtml(t('sidebar.noItems', 'No items'))}</span>`;
+      } else {
+        for (const suite of suites) {
+          const item = document.createElement('div');
+          item.tabIndex = 0;
+          item.role = 'button';
+          item.className = `sidebar-thread-item${suite.id === suiteState.selectedId ? ' active' : ''}`;
+          item.innerHTML = `
+            <span>
+              <strong>${escapeHtml(suite.name)}</strong>
+              <small>${escapeHtml(suite.type || 'custom')}</small>
+            </span>
+            <button type="button" class="sidebar-icon-action danger" title="${escapeHtml(t('suite.delete', 'Delete item'))}">×</button>
+          `;
+          item.addEventListener('click', () => openWorkspaceItem(project.id, suite.id));
+          item.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              openWorkspaceItem(project.id, suite.id);
+            }
+          });
+          item.querySelector('.sidebar-icon-action').addEventListener('click', (event) => {
+            event.stopPropagation();
+            deleteSuiteById(project.id, suite.id);
+          });
+          list.appendChild(item);
+        }
+      }
+
+      group.appendChild(list);
+    }
+    sidebarProjectList.appendChild(group);
+  }
 }
 
 function renderProjects() {
@@ -992,10 +1203,9 @@ function renderProjects() {
 
   if (!projectState.projects.length) {
     projectList.innerHTML = `<p class="empty">${escapeHtml(t('projects.empty', 'No projects yet.'))}</p>`;
-    if (sidebarProjectList) {
-      sidebarProjectList.innerHTML = `<span>${escapeHtml(t('projects.empty', 'No projects yet.'))}</span>`;
-    }
+    renderSidebarWorkspace();
     projectSelectedMeta.textContent = t('projects.noSelected', 'No project selected');
+    updateWorkspaceTitle();
     return;
   }
 
@@ -1032,22 +1242,7 @@ function renderProjects() {
     projectList.appendChild(item);
   }
 
-  if (sidebarProjectList) {
-    for (const project of projectState.projects.slice(0, 8)) {
-      const item = document.createElement('button');
-      item.type = 'button';
-      item.className = `sidebar-project-item${project.id === projectState.selectedId ? ' active' : ''}`;
-      item.innerHTML = `
-        <strong>${escapeHtml(project.name)}</strong>
-        <small class="sidebar-project-env">${escapeHtml(compactEnvironmentLabel(project.environment || project.baseUrl))}</small>
-      `;
-      item.addEventListener('click', () => {
-        selectProject(project.id);
-        showPage('run');
-      });
-      sidebarProjectList.appendChild(item);
-    }
-  }
+  renderSidebarWorkspace();
 
   if (projectState.selectedId && !getSelectedProject()) {
     projectState.selectedId = '';
@@ -1058,12 +1253,165 @@ function renderProjects() {
   projectSelectedMeta.textContent = selectedProject
     ? `${selectedProject.environment.toUpperCase()} | ${selectedProject.baseUrl}`
     : t('common.manualUrl', 'Manual URL');
+  updateWorkspaceTitle();
 }
 
 async function loadProjects() {
   const projects = await requestJson('/api/projects');
   projectState.projects = projects;
+  await loadSidebarSuites();
   renderProjects();
+}
+
+async function openWorkspaceItem(projectIdValue, suiteIdValue) {
+  const projectChanged = projectState.selectedId !== projectIdValue;
+  const needsSuiteLoad = projectChanged || !suiteState.suites.some((suite) => suite.id === suiteIdValue);
+
+  if (projectChanged) {
+    selectProject(projectIdValue);
+    await Promise.all([loadTargets(projectIdValue), loadSuites(projectIdValue)]);
+  } else if (needsSuiteLoad) {
+    await loadSuites(projectIdValue);
+  }
+
+  selectSuite(suiteIdValue);
+  showPage('run');
+  await loadRuns();
+  updateWorkspaceTitle();
+}
+
+async function createSidebarProject() {
+  const name = window.prompt(t('sidebar.projectNamePrompt', 'Project name?'), t('sidebar.newProject', 'New project'));
+
+  if (!name?.trim()) {
+    return;
+  }
+
+  const project = await requestJson('/api/projects', {
+    method: 'POST',
+    body: JSON.stringify({
+      name: name.trim(),
+      description: '',
+      baseUrl: siteUrl.value || 'https://example.com/',
+      environment: 'production',
+    }),
+  });
+
+  await loadProjects();
+  selectProject(project.id);
+  showPage('run');
+  setStatus(t('projects.saved', 'Project saved'), 'passed');
+}
+
+async function createSidebarSuite(projectIdValue = projectState.selectedId) {
+  const project = projectState.projects.find((item) => item.id === projectIdValue);
+
+  if (!project) {
+    setStatus(t('suite.selectProjectStatus', 'Select project'), 'failed');
+    return;
+  }
+
+  const name = window.prompt(t('sidebar.itemNamePrompt', 'Item name?'), t('sidebar.newItem', 'New test flow'));
+
+  if (!name?.trim()) {
+    return;
+  }
+
+  const suite = await requestJson('/api/test-suites', {
+    method: 'POST',
+    body: JSON.stringify({
+      projectId: project.id,
+      name: name.trim(),
+      type: 'custom',
+      description: '',
+      config: {},
+      enabled: true,
+    }),
+  });
+
+  await loadSidebarSuites();
+  await openWorkspaceItem(project.id, suite.id);
+  setStatus(t('suite.saved', 'Suite saved'), 'passed');
+}
+
+async function deleteProjectById(projectIdValue) {
+  const project = projectState.projects.find((item) => item.id === projectIdValue);
+
+  if (!project) {
+    return;
+  }
+
+  const confirmed = window.confirm(t('projects.confirmDelete', 'Delete project "{name}"?', {
+    name: project.name,
+  }));
+
+  if (!confirmed) {
+    return;
+  }
+
+  await requestJson(`/api/projects/${encodeURIComponent(project.id)}`, {
+    method: 'DELETE',
+  });
+
+  if (projectState.selectedId === project.id) {
+    projectState.selectedId = '';
+    suiteState.selectedId = '';
+    suiteState.suites = [];
+    targetState.selectedId = '';
+    targetState.targets = [];
+    caseState.selectedId = '';
+    caseState.cases = [];
+    resetProjectForm();
+    resetSuiteForm();
+    resetCaseForm();
+    resetTargetForm();
+  }
+
+  await loadProjects();
+  await loadRuns();
+  renderTargets();
+  renderSuites();
+  renderCases();
+  updateWorkspaceTitle();
+  setStatus(t('projects.deleted', 'Project deleted'), 'passed');
+}
+
+async function deleteSuiteById(projectIdValue, suiteIdValue) {
+  const suite = getSidebarSuites(projectIdValue).find((item) => item.id === suiteIdValue);
+
+  if (!suite) {
+    return;
+  }
+
+  const confirmed = window.confirm(t('suite.confirmDelete', 'Delete suite "{name}"?', {
+    name: suite.name,
+  }));
+
+  if (!confirmed) {
+    return;
+  }
+
+  await requestJson(`/api/test-suites/${encodeURIComponent(suite.id)}`, {
+    method: 'DELETE',
+  });
+
+  if (suiteState.selectedId === suite.id) {
+    suiteState.selectedId = '';
+    caseState.selectedId = '';
+    caseState.cases = [];
+    resetSuiteForm();
+    resetCaseForm();
+  }
+
+  await loadSidebarSuites();
+  if (projectState.selectedId === projectIdValue) {
+    await loadSuites(projectIdValue);
+  }
+  await loadRuns();
+  renderProjects();
+  renderCases();
+  updateWorkspaceTitle();
+  setStatus(t('suite.deleted', 'Suite deleted'), 'passed');
 }
 
 function renderTargets() {
@@ -1323,12 +1671,20 @@ function selectSuite(suiteIdValue) {
     resetSuiteForm();
     renderSuites();
     renderCases();
+    renderProjects();
+    updateWorkspaceTitle();
     return;
   }
 
   suiteSelectedMeta.textContent = `${suite.type} | ${suite.enabled ? t('common.enabled', 'enabled') : t('common.disabled', 'disabled')}`;
   fillSuiteForm(suite);
   renderSuites();
+  renderProjects();
+  updateWorkspaceTitle();
+  loadRuns().catch((error) => {
+    generatedCode.value = error.message;
+    setStatus(t('common.error', 'Error'), 'failed');
+  });
   loadCases(suite.id).catch((error) => {
     generatedCode.value = error.message;
     setStatus(t('common.error', 'Error'), 'failed');
@@ -1354,6 +1710,8 @@ async function loadSuites(projectIdValue = projectState.selectedId) {
   }
 
   renderSuites();
+  renderProjects();
+  updateWorkspaceTitle();
 }
 
 async function loadCases(suiteIdValue = suiteState.selectedId) {
@@ -1397,6 +1755,7 @@ async function saveSuite(event) {
   });
 
   await loadSuites(projectState.selectedId);
+  await loadSidebarSuites();
   selectSuite(suite.id);
   setStatus(t('suite.saved', 'Suite saved'), 'passed');
 }
@@ -1426,6 +1785,9 @@ async function deleteSelectedSuite() {
   resetSuiteForm();
   resetCaseForm();
   await loadSuites(projectState.selectedId);
+  await loadSidebarSuites();
+  renderProjects();
+  await loadRuns();
   renderCases();
   setStatus(t('suite.deleted', 'Suite deleted'), 'passed');
 }
@@ -1572,6 +1934,7 @@ async function saveProject(event) {
 
   await loadProjects();
   selectProject(project.id);
+  await loadRuns();
   setStatus(t('projects.saved', 'Project saved'), 'passed');
 }
 
@@ -1609,6 +1972,8 @@ async function deleteSelectedProject() {
   renderSuites();
   renderCases();
   await loadProjects();
+  await loadRuns();
+  updateWorkspaceTitle();
   setStatus(t('projects.deleted', 'Project deleted'), 'passed');
 }
 
@@ -1632,9 +1997,38 @@ function renderCaseDetail(testCase) {
           `
         )
         .join('')}
+      ${renderEvidenceImages(testCase)}
       ${testCase.code ? `<pre class="case-code">${escapeHtml(testCase.code)}</pre>` : ''}
       ${testCase.error ? `<pre class="case-error">${escapeHtml(testCase.error)}</pre>` : ''}
     </div>
+  `;
+}
+
+function renderEvidenceImage(label, value) {
+  const src = typeof value === 'string' ? value.trim() : '';
+
+  if (!src) {
+    return '';
+  }
+
+  const canPreview = /^https?:/i.test(src) || /^data:/i.test(src) || src.startsWith('/api/');
+
+  return `
+    <div class="evidence-preview">
+      <span>${escapeHtml(label)}</span>
+      ${
+        canPreview
+          ? `<a href="${escapeHtml(src)}" target="_blank" rel="noreferrer"><img src="${escapeHtml(src)}" alt="${escapeHtml(label)}"></a>`
+          : `<strong>${escapeHtml(src)}</strong>`
+      }
+    </div>
+  `;
+}
+
+function renderEvidenceImages(testCase) {
+  return `
+    ${renderEvidenceImage(t('fileFlow.inputImage', 'Input image'), testCase.inputImage)}
+    ${renderEvidenceImage(t('fileFlow.actualImage', 'Actual screenshot'), testCase.actualImage)}
   `;
 }
 
@@ -1704,6 +2098,9 @@ function openFactDetail(label, value, testCase = {}) {
         [t('fileFlow.testData', 'Test data'), testCase.testData],
         [t('detail.expected', 'Expected'), testCase.expected],
         [t('detail.actual', 'Actual result'), testCase.actual],
+        [t('fileFlow.inputImage', 'Input image'), testCase.inputImage],
+        [t('fileFlow.actualImage', 'Actual screenshot'), testCase.actualImage],
+        [t('fileFlow.defectId', 'Defect ID'), testCase.defectId],
         [t('common.duration', 'Duration'), formatDuration(testCase.durationMs)],
         [t('detail.selector', 'Selector'), testCase.selector],
         [t('fileFlow.notes', 'Notes'), testCase.notes],
@@ -1729,6 +2126,7 @@ function openFactDetail(label, value, testCase = {}) {
         `
         : ''
     }
+    ${renderEvidenceImages(testCase)}
     ${testCase.error ? `<pre class="case-error">${escapeHtml(testCase.error)}</pre>` : ''}
     ${testCase.code ? `<pre class="case-code">${escapeHtml(testCase.code)}</pre>` : ''}
   `;
@@ -1908,7 +2306,7 @@ function setRunMode(mode) {
       ? testcaseFileState.csvContent
         ? t('fileFlow.runImported', 'Run imported')
         : t('fileFlow.import', 'Import CSV')
-      : t('fileFlow.generate', 'Generate CSV');
+      : t('fileFlow.generate', 'Generate testcase file');
   }
 }
 
@@ -1938,6 +2336,8 @@ function setCaseFileState(result = {}) {
   testcaseFileState.csvContent = result.csvContent || '';
   testcaseFileState.fileName = result.fileName || '';
   testcaseFileState.downloadUrl = result.downloadUrl || '';
+  testcaseFileState.excelDownloadUrl = result.excelDownloadUrl || '';
+  testcaseFileState.docDownloadUrl = result.docDownloadUrl || '';
   testcaseFileState.rows = Array.isArray(result.rows) ? result.rows : [];
   const count = testcaseFileState.rows.length;
 
@@ -1969,6 +2369,18 @@ function setCaseFileState(result = {}) {
     downloadCaseFileLink.classList.toggle('disabled', !testcaseFileState.downloadUrl);
     downloadCaseFileLink.setAttribute('aria-disabled', String(!testcaseFileState.downloadUrl));
     downloadCaseFileLink.download = testcaseFileState.fileName || '';
+  }
+
+  if (downloadCaseExcelLink) {
+    downloadCaseExcelLink.href = testcaseFileState.excelDownloadUrl || '#';
+    downloadCaseExcelLink.classList.toggle('disabled', !testcaseFileState.excelDownloadUrl);
+    downloadCaseExcelLink.setAttribute('aria-disabled', String(!testcaseFileState.excelDownloadUrl));
+  }
+
+  if (downloadCaseDocLink) {
+    downloadCaseDocLink.href = testcaseFileState.docDownloadUrl || '#';
+    downloadCaseDocLink.classList.toggle('disabled', !testcaseFileState.docDownloadUrl);
+    downloadCaseDocLink.setAttribute('aria-disabled', String(!testcaseFileState.docDownloadUrl));
   }
 
   if (runImportedFileButton) {
@@ -2004,7 +2416,7 @@ async function generateCaseFile() {
   toggleCaseDetail(false);
   renderPlanLoading(
     t('fileFlow.generatingTitle', 'Generating testcase file'),
-    t('fileFlow.generatingText', 'AI is preparing cases, then the backend converts them into a CSV you can edit in Excel.')
+    t('fileFlow.generatingText', 'AI is preparing cases, then the backend converts them into editable QC files.')
   );
   setProgress('generate', 30);
 
@@ -2028,6 +2440,7 @@ async function generateCaseFile() {
     setStatus(t('common.generated', 'Generated'), 'passed');
     setStatusDetail('');
     setProgress('store', 100);
+    await loadRuns();
   } catch (error) {
     generatedCode.value = error.message;
     renderGeneratedPlan([]);
@@ -2044,12 +2457,19 @@ async function importCaseFile() {
     const selectedFile = await readSelectedCaseFile();
     const result = await requestJson('/api/testcase-files/import', {
       method: 'POST',
-      body: JSON.stringify(selectedFile),
+      body: JSON.stringify({
+        ...selectedFile,
+        url: siteUrl.value,
+        projectId: projectState.selectedId,
+        suiteId: suiteState.selectedId,
+        targetId: targetState.selectedId,
+      }),
     });
     setCaseFileState(result);
     renderGeneratedPlan(result.cases || []);
     toggleCaseDetail(false);
     setStatus(t('fileFlow.imported', 'CSV imported'), 'passed');
+    await loadRuns();
   } catch (error) {
     generatedCode.value = error.message;
     setStatus(t('common.error', 'Error'), 'failed');
@@ -2223,36 +2643,47 @@ function renderHistory() {
   }
 
   for (const run of pageRuns) {
-    const item = document.createElement('button');
-    item.type = 'button';
+    const item = document.createElement('article');
     item.className = `history-item ${run.status || 'pending'}`;
     item.dataset.runId = run.id;
     item.innerHTML = `
-      <span class="run-status ${run.status}">${escapeHtml(statusText(run.status))}</span>
-      <span class="history-url">
-        <strong class="history-title">${escapeHtml(getRunTitle(run))}</strong>
-        <strong>${escapeHtml(run.url)}</strong>
-        <span>${new Date(run.createdAt).toLocaleString()}</span>
-        ${renderRunErrorNote(run, 'history-error-note')}
-      </span>
-      <span class="history-metrics">
-        ${escapeHtml(t('history.passedSummary', '{passed}/{total} passed - {duration}', {
-          passed: run.summary.passed,
-          total: run.summary.total,
-          duration: formatDuration(run.durationMs),
-        }))}
-      </span>
+      <button type="button" class="history-open" aria-label="${escapeHtml(t('history.openDetail', 'Open run detail'))}">
+        <span class="run-status ${run.status}">${escapeHtml(statusText(run.status))}</span>
+        <span class="history-url">
+          <strong class="history-title">${escapeHtml(getRunTitle(run))}</strong>
+          <span class="history-kind">${escapeHtml(runKindLabel(run))}</span>
+          <strong>${escapeHtml(run.url)}</strong>
+          <span>${new Date(run.createdAt).toLocaleString()}</span>
+          ${renderRunErrorNote(run, 'history-error-note')}
+        </span>
+        <span class="history-metrics">
+          ${escapeHtml(historyMetricText(run))}
+        </span>
+      </button>
+      ${renderHistoryQuickDownloads(run)}
     `;
-    item.addEventListener('click', () => openRunDetail(run.id));
+    item.querySelector('.history-open').addEventListener('click', () => openRunDetail(run.id));
     historyList.appendChild(item);
   }
 
   updateLatest(runs[0]);
 }
 
+function filterRunsForWorkspace(runs) {
+  if (suiteState.selectedId) {
+    return runs.filter((run) => run.suiteId === suiteState.selectedId);
+  }
+
+  if (projectState.selectedId) {
+    return runs.filter((run) => run.projectId === projectState.selectedId);
+  }
+
+  return runs;
+}
+
 async function loadRuns() {
   const runs = await requestJson('/api/runs');
-  historyState.runs = runs;
+  historyState.runs = filterRunsForWorkspace(runs);
   historyState.page = 1;
   renderHistory();
 }
@@ -2395,15 +2826,21 @@ async function openRunDetail(runId) {
     detailTitle.textContent = run.url;
     detailSummary.innerHTML = `
       <span class="run-status ${run.status}">${escapeHtml(statusText(run.status))}</span>
-      <strong>${escapeHtml(t('history.passedSummary', '{passed}/{total} passed - {duration}', {
-        passed: run.summary.passed,
-        total: run.summary.total,
-        duration: formatDuration(run.durationMs),
-      }))}</strong>
+      <strong>${escapeHtml(historyMetricText(run))}</strong>
       ${run.suiteName ? `<span>${escapeHtml(run.suiteName)} (${escapeHtml(run.suiteType || 'suite')})</span>` : ''}
       ${run.targetName ? `<span>${escapeHtml(run.targetName)} (${escapeHtml(run.targetType || 'target')})</span>` : ''}
       <span>${new Date(run.createdAt).toLocaleString()}</span>
-      ${run.resultCsvUrl ? `<a class="secondary file-download" href="${escapeHtml(run.resultCsvUrl)}">${escapeHtml(t('fileFlow.downloadResult', 'Download result CSV'))}</a>` : ''}
+      <span class="history-kind">${escapeHtml(runKindLabel(run))}</span>
+      ${renderDownloadGroup(t('fileFlow.downloadSourceGroup', 'Testcase file'), [
+        { href: run.testcaseCsvUrl, label: t('fileFlow.downloadSourceCsv', 'Source CSV') },
+        { href: run.testcaseExcelUrl, label: t('fileFlow.downloadSourceExcel', 'Source Excel') },
+        { href: run.testcaseDocUrl, label: t('fileFlow.downloadSourceDoc', 'Source Word') },
+      ])}
+      ${renderDownloadGroup(t('fileFlow.downloadResultGroup', 'Auto test result'), [
+        { href: run.resultCsvUrl, label: t('fileFlow.downloadResultCsv', 'Result CSV') },
+        { href: run.resultExcelUrl, label: t('fileFlow.downloadResultExcelShort', 'Result Excel') },
+        { href: run.resultDocUrl, label: t('fileFlow.downloadResultDocShort', 'Result Word') },
+      ])}
     `;
     caseList.innerHTML = `
       ${run.aiExplanation ? `
@@ -2532,6 +2969,8 @@ newCaseButton.addEventListener('click', () => {
   renderCases();
 });
 deleteCaseButton.addEventListener('click', deleteSelectedCase);
+newSidebarProjectButton?.addEventListener('click', createSidebarProject);
+newSidebarItemButton?.addEventListener('click', () => createSidebarSuite(projectState.selectedId));
 projectSelect.addEventListener('change', () => selectProject(projectSelect.value));
 suiteSelect.addEventListener('change', () => selectSuite(suiteSelect.value));
 targetSelect.addEventListener('change', () => selectTarget(targetSelect.value));

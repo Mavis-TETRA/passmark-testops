@@ -89,11 +89,17 @@ type TestRun = {
   stderr: string;
   errorReason?: string;
   resultCsvUrl?: string;
+  resultExcelUrl?: string;
+  resultDocUrl?: string;
+  testcaseCsvUrl?: string;
+  testcaseExcelUrl?: string;
+  testcaseDocUrl?: string;
+  historyKind?: 'testcase-file' | 'auto-test';
 };
 
 type TestRunSummary = Omit<TestRun, 'stdout' | 'stderr'>;
 
-type TestRunStatus = 'queued' | 'running' | 'passed' | 'failed' | 'cancelled';
+type TestRunStatus = 'generated' | 'queued' | 'running' | 'passed' | 'failed' | 'cancelled';
 
 type TestCaseDetail = {
   caseId?: string;
@@ -112,6 +118,12 @@ type TestCaseDetail = {
   testType?: string;
   automationCandidate?: string;
   notes?: string;
+  inputImage?: string;
+  actualImage?: string;
+  defectId?: string;
+  testerName?: string;
+  reviewerName?: string;
+  reviewDate?: string;
   selector?: string;
   expected?: string;
   actual?: string;
@@ -123,6 +135,8 @@ type TestCaseStep = {
   title: string;
   detail: string;
   status?: string;
+  inputImage?: string;
+  actualImage?: string;
 };
 
 type SeoAuditValues = {
@@ -160,6 +174,9 @@ type RunQueueJob = {
   context: RunContext;
   importedCases?: TestcaseFileRow[];
   sourceFileName?: string;
+  testcaseFilePath?: string;
+  testcaseExcelFileName?: string;
+  testcaseDocFileName?: string;
 };
 
 type GeneratedSpecResult = {
@@ -170,23 +187,39 @@ type GeneratedSpecResult = {
 
 type TestcaseFileRow = {
   caseId: string;
+  projectId?: string;
+  projectName?: string;
   module: string;
+  requirementId?: string;
   feature: string;
   title: string;
   objective: string;
+  interDependencies?: string;
   preconditions: string;
+  testDataPreparation?: string;
   testData: string;
   steps: string;
+  actionInputData?: string;
   expectedResult: string;
   priority: string;
+  regression?: string;
+  platform?: string;
+  tools?: string;
   severity: string;
   testType: string;
   automationCandidate: string;
   automationKind: string;
   selector: string;
   expectedText: string;
+  inputImage?: string;
+  actualImage?: string;
+  screenshotPolicy?: string;
   status?: string;
   actualResult?: string;
+  defectId?: string;
+  testerName?: string;
+  reviewerName?: string;
+  reviewDate?: string;
   notes?: string;
   durationMs?: string;
 };
@@ -269,7 +302,22 @@ function dbRunToApiRun(run: any): TestRun {
   const resultCsvArtifact = Array.isArray(run.artifacts)
     ? run.artifacts.find((artifact: any) => artifact.type === 'result-csv' && artifact.path)
     : undefined;
-  const supportedStatuses: TestRunStatus[] = ['queued', 'running', 'passed', 'failed', 'cancelled'];
+  const resultExcelArtifact = Array.isArray(run.artifacts)
+    ? run.artifacts.find((artifact: any) => artifact.type === 'result-excel' && artifact.path)
+    : undefined;
+  const resultDocArtifact = Array.isArray(run.artifacts)
+    ? run.artifacts.find((artifact: any) => artifact.type === 'result-doc' && artifact.path)
+    : undefined;
+  const testcaseCsvArtifact = Array.isArray(run.artifacts)
+    ? run.artifacts.find((artifact: any) => artifact.type === 'testcase-csv' && artifact.path)
+    : undefined;
+  const testcaseExcelArtifact = Array.isArray(run.artifacts)
+    ? run.artifacts.find((artifact: any) => artifact.type === 'testcase-excel' && artifact.path)
+    : undefined;
+  const testcaseDocArtifact = Array.isArray(run.artifacts)
+    ? run.artifacts.find((artifact: any) => artifact.type === 'testcase-doc' && artifact.path)
+    : undefined;
+  const supportedStatuses: TestRunStatus[] = ['generated', 'queued', 'running', 'passed', 'failed', 'cancelled'];
   const status = supportedStatuses.includes(run.status) ? run.status : 'failed';
   const cases = results.map((result: any) => {
     const extra = parseJsonText(result.aiDiagnosis);
@@ -282,6 +330,9 @@ function dbRunToApiRun(run: any): TestRun {
       expected: result.expectedResult || undefined,
       actual: typeof extra.actual === 'string' ? extra.actual : result.status,
       selector: typeof extra.selector === 'string' ? extra.selector : undefined,
+      inputImage: typeof extra.inputImage === 'string' ? extra.inputImage : undefined,
+      actualImage: typeof extra.actualImage === 'string' ? extra.actualImage : undefined,
+      defectId: typeof extra.defectId === 'string' ? extra.defectId : undefined,
       code: typeof extra.code === 'string' ? extra.code : result.caseCode,
       description: typeof extra.description === 'string' ? extra.description : result.caseName,
       steps: Array.isArray(extra.steps) ? (extra.steps as TestCaseStep[]) : undefined,
@@ -314,10 +365,26 @@ function dbRunToApiRun(run: any): TestRun {
     userRequest: run.userRequest,
     stdout: run.stdout,
     stderr: run.stderr,
-    errorReason: deriveRunErrorReason(status, cases, run.stderr, run.stdout),
+    errorReason: status === 'generated' ? undefined : deriveRunErrorReason(status, cases, run.stderr, run.stdout),
+    historyKind: status === 'generated' ? 'testcase-file' : 'auto-test',
     resultCsvUrl: resultCsvArtifact?.path
       ? `/api/testcase-files/download/${encodeURIComponent(path.basename(resultCsvArtifact.path))}`
       : undefined,
+    resultExcelUrl: resultExcelArtifact?.path
+      ? `/api/testcase-files/download/${encodeURIComponent(path.basename(resultExcelArtifact.path))}`
+      : undefined,
+    resultDocUrl: resultDocArtifact?.path
+      ? `/api/testcase-files/download/${encodeURIComponent(path.basename(resultDocArtifact.path))}`
+      : undefined,
+    testcaseCsvUrl: testcaseCsvArtifact?.path
+      ? `/api/testcase-files/download/${encodeURIComponent(path.basename(testcaseCsvArtifact.path))}`
+      : results.length ? `/api/runs/${encodeURIComponent(run.id)}/testcase-source/csv` : undefined,
+    testcaseExcelUrl: testcaseExcelArtifact?.path
+      ? `/api/testcase-files/download/${encodeURIComponent(path.basename(testcaseExcelArtifact.path))}`
+      : results.length ? `/api/runs/${encodeURIComponent(run.id)}/testcase-source/xls` : undefined,
+    testcaseDocUrl: testcaseDocArtifact?.path
+      ? `/api/testcase-files/download/${encodeURIComponent(path.basename(testcaseDocArtifact.path))}`
+      : results.length ? `/api/runs/${encodeURIComponent(run.id)}/testcase-source/doc` : undefined,
   };
 }
 
@@ -405,10 +472,7 @@ function compactErrorText(value: unknown): string {
     return '';
   }
 
-  const text = value
-    .replace(/\u001b\[[0-9;]*m/g, '')
-    .replace(/\r/g, '')
-    .trim();
+  const text = cleanOutputText(value).trim();
 
   if (!text) {
     return '';
@@ -420,6 +484,21 @@ function compactErrorText(value: unknown): string {
     .filter(Boolean);
 
   return lines.slice(0, 8).join('\n').slice(0, 1200);
+}
+
+function cleanOutputText(value: unknown, maxLength = 6000): string {
+  if (typeof value !== 'string') {
+    return '';
+  }
+
+  return value
+    .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '')
+    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '')
+    .replace(/\[\d+(?:;\d+)*m/g, '')
+    .replace(/\r/g, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .trim()
+    .slice(0, maxLength);
 }
 
 function deriveRunErrorReason(
@@ -1019,7 +1098,7 @@ function extractCaseDetails(stdout: string): TestCaseDetail[] {
               ? testResult.status
               : 'unknown',
         durationMs: typeof result?.duration === 'number' ? result.duration : 0,
-        error: typeof firstError?.message === 'string' ? firstError.message : undefined,
+        error: typeof firstError?.message === 'string' ? cleanOutputText(firstError.message) : undefined,
       };
     });
 
@@ -1033,7 +1112,7 @@ function extractCaseDetails(stdout: string): TestCaseDetail[] {
           durationMs: 0,
           error:
             typeof firstError?.message === 'string'
-              ? firstError.message
+              ? cleanOutputText(firstError.message)
               : 'Playwright failed before running any test case.',
         },
       ];
@@ -1403,23 +1482,39 @@ function previewGeneratedCases(generatedCode = '', userRequest = ''): TestCaseDe
 
 const testcaseFileColumns: Array<keyof TestcaseFileRow> = [
   'caseId',
+  'projectId',
+  'projectName',
   'module',
+  'requirementId',
   'feature',
   'title',
   'objective',
+  'interDependencies',
   'preconditions',
+  'testDataPreparation',
   'testData',
   'steps',
+  'actionInputData',
   'expectedResult',
   'priority',
+  'regression',
+  'platform',
+  'tools',
   'severity',
   'testType',
   'automationCandidate',
   'automationKind',
   'selector',
   'expectedText',
+  'inputImage',
+  'actualImage',
+  'screenshotPolicy',
   'status',
   'actualResult',
+  'defectId',
+  'testerName',
+  'reviewerName',
+  'reviewDate',
   'notes',
   'durationMs',
 ];
@@ -1532,25 +1627,41 @@ function inferAutomationKind(testCase: TestCaseDetail): string {
 function testcaseRowsFromCases(cases: TestCaseDetail[]): TestcaseFileRow[] {
   return cases.map((testCase, index) => ({
     caseId: testCase.caseId || caseCodeFromTitle(testCase.title) || generatedCaseCode(index),
+    projectId: '',
+    projectName: '',
     module: testCase.module || 'General',
+    requirementId: '',
     feature: testCase.feature || 'Page behavior',
     title: testCase.title.replace(caseCodeFromTitle(testCase.title), '').trim() || testCase.title,
     objective: testCase.objective || testCase.description || '',
+    interDependencies: '',
     preconditions: testCase.preconditions || 'Target URL is reachable and required account/session is available when applicable.',
+    testDataPreparation: testCase.testData || '',
     testData: testCase.testData || '',
     steps: Array.isArray(testCase.steps) && testCase.steps.length
       ? testCase.steps.map((step, stepIndex) => `${stepIndex + 1}. ${step.title}: ${step.detail}`).join('\n')
       : '',
+    actionInputData: '',
     expectedResult: testCase.expected || 'The expected behavior should be visible and correct.',
     priority: 'medium',
+    regression: 'yes',
+    platform: 'Web',
+    tools: 'Playwright Chromium',
     severity: 'major',
     testType: testCase.testType || 'functional',
     automationCandidate: testCase.automationCandidate || 'partial',
     automationKind: inferAutomationKind(testCase),
     selector: testCase.selector || '',
     expectedText: '',
+    inputImage: testCase.inputImage || '',
+    actualImage: testCase.actualImage || '',
+    screenshotPolicy: 'on-failure',
     status: '',
     actualResult: '',
+    defectId: '',
+    testerName: testCase.testerName || '',
+    reviewerName: testCase.reviewerName || '',
+    reviewDate: testCase.reviewDate || '',
     notes: testCase.notes || '',
     durationMs: '',
   }));
@@ -1576,7 +1687,9 @@ function testcaseRowsFromCsv(csvContent: string): TestcaseFileRow[] {
   }
 
   const headers = parsed[0].map((header) => header.trim());
-  const missingColumns = ['title'].filter((column) => !headers.includes(column));
+  const titleAliases = ['title', 'testCaseTitle'];
+  const hasTitle = titleAliases.some((column) => headers.includes(column));
+  const missingColumns = hasTitle ? [] : ['title'];
   const hasCaseId = headers.includes('caseId') || headers.includes('caseCode');
 
   if (missingColumns.length || !hasCaseId) {
@@ -1592,23 +1705,39 @@ function testcaseRowsFromCsv(csvContent: string): TestcaseFileRow[] {
 
       return {
         caseId: csvField(row, 'caseId', 'caseCode') || generatedCaseCode(index),
+        projectId: csvField(row, 'projectId', 'projectID'),
+        projectName: csvField(row, 'projectName'),
         module: csvField(row, 'module') || 'General',
+        requirementId: csvField(row, 'requirementId', 'requirementID'),
         feature: csvField(row, 'feature') || 'Page behavior',
-        title: row.title?.trim() || `Imported testcase ${index + 1}`,
+        title: csvField(row, 'title', 'testCaseTitle') || `Imported testcase ${index + 1}`,
         objective: csvField(row, 'objective', 'description') || '',
+        interDependencies: csvField(row, 'interDependencies', 'interTestCaseDependencies', 'dependencies'),
         preconditions: csvField(row, 'preconditions') || '',
+        testDataPreparation: csvField(row, 'testDataPreparation'),
         testData: csvField(row, 'testData') || '',
-        steps: row.steps?.trim() || '',
+        steps: csvField(row, 'steps', 'actionInputData') || '',
+        actionInputData: csvField(row, 'actionInputData', 'action', 'inputData'),
         expectedResult: csvField(row, 'expectedResult', 'expected') || 'The check should pass.',
         priority: row.priority?.trim() || 'medium',
+        regression: csvField(row, 'regression') || 'yes',
+        platform: csvField(row, 'platform') || 'Web',
+        tools: csvField(row, 'tools') || 'Playwright Chromium',
         severity: row.severity?.trim() || 'major',
         testType: row.testType?.trim() || 'functional',
         automationCandidate: row.automationCandidate?.trim() || (row.automationKind?.trim() ? 'partial' : 'no'),
         automationKind: row.automationKind?.trim() || 'manual',
         selector: row.selector?.trim() || '',
         expectedText: row.expectedText?.trim() || '',
+        inputImage: csvField(row, 'inputImage', 'attachmentImage', 'screenshotInput', 'stepImage'),
+        actualImage: csvField(row, 'actualImage', 'screenshotActual', 'evidenceImage'),
+        screenshotPolicy: csvField(row, 'screenshotPolicy') || 'on-failure',
         status: row.status?.trim() || '',
         actualResult: csvField(row, 'actualResult', 'actual') || '',
+        defectId: csvField(row, 'defectId', 'defectID') || '',
+        testerName: csvField(row, 'testerName') || '',
+        reviewerName: csvField(row, 'reviewerName') || '',
+        reviewDate: csvField(row, 'reviewDate') || '',
         notes: row.notes?.trim() || '',
         durationMs: row.durationMs?.trim() || '',
       };
@@ -1640,34 +1769,247 @@ function writeTestcaseCsvFile(rows: TestcaseFileRow[], prefix = 'testcases'): { 
   return { fileName, filePath, csvContent };
 }
 
-async function writeRunResultCsv(runId: string): Promise<{ fileName: string; filePath: string }> {
+function htmlEscape(value: unknown): string {
+  return cleanOutputText(String(value ?? ''), 20000)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function htmlMultiline(value: unknown): string {
+  return htmlEscape(value).replace(/\r?\n/g, '<br>');
+}
+
+function mimeTypeForPath(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase();
+  const contentTypes: Record<string, string> = {
+    '.csv': 'text/csv; charset=utf-8',
+    '.xls': 'application/vnd.ms-excel; charset=utf-8',
+    '.doc': 'application/msword; charset=utf-8',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.webp': 'image/webp',
+  };
+
+  return contentTypes[ext] || 'application/octet-stream';
+}
+
+function resolveImagePath(value?: string): string {
+  const text = (value || '').trim();
+
+  if (!text || /^(https?:|data:)/i.test(text)) {
+    return '';
+  }
+
+  const apiPrefix = '/api/testcase-files/download/';
+  if (text.startsWith(apiPrefix)) {
+    return testcaseFilePath(decodeURIComponent(text.slice(apiPrefix.length)));
+  }
+
+  const normalized = path.normalize(text);
+  if (path.isAbsolute(normalized) && fs.existsSync(normalized)) {
+    return normalized;
+  }
+
+  const fromRoot = path.normalize(path.join(rootDir, text));
+  if (fromRoot.startsWith(rootDir) && fs.existsSync(fromRoot)) {
+    return fromRoot;
+  }
+
+  const fromTestcaseFiles = testcaseFilePath(text);
+  return fs.existsSync(fromTestcaseFiles) ? fromTestcaseFiles : '';
+}
+
+function officeImage(value?: string): string {
+  const text = (value || '').trim();
+
+  if (!text) {
+    return '';
+  }
+
+  if (/^data:/i.test(text)) {
+    return `<img class="evidence-img" src="${htmlEscape(text)}" alt="Test evidence">`;
+  }
+
+  if (/^https?:/i.test(text)) {
+    return `<img class="evidence-img" src="${htmlEscape(text)}" alt="Test evidence">`;
+  }
+
+  const imagePath = resolveImagePath(text);
+  if (!imagePath) {
+    return `<div class="image-ref">${htmlEscape(text)}</div>`;
+  }
+
+  const contentType = mimeTypeForPath(imagePath);
+  const base64 = fs.readFileSync(imagePath).toString('base64');
+  return `<img class="evidence-img" src="data:${contentType};base64,${base64}" alt="Test evidence">`;
+}
+
+function writeOfficeHtmlFile(
+  rows: TestcaseFileRow[],
+  prefix: string,
+  format: 'xls' | 'doc',
+  title = 'QC Testcase Document'
+): { fileName: string; filePath: string } {
+  const fileName = `${prefix}-${Date.now()}.${format}`;
+  const filePath = testcaseFilePath(fileName);
+  const first = rows[0];
+  const today = new Date().toLocaleDateString('en-CA');
+  const headerRows = first ? `
+    <table class="meta">
+      <tr>
+        <th>Test Case ID</th><td>${htmlEscape(first.caseId)}</td>
+        <th>Project ID</th><td>${htmlEscape(first.projectId || '')}</td>
+        <th>Module</th><td>${htmlEscape(first.module)}</td>
+      </tr>
+      <tr>
+        <th>Test Case Title</th><td>${htmlEscape(first.title)}</td>
+        <th>Project Name</th><td>${htmlEscape(first.projectName || '')}</td>
+        <th>Requirement ID</th><td>${htmlEscape(first.requirementId || '')}</td>
+      </tr>
+      <tr>
+        <th>Test Objective</th><td colspan="3">${htmlMultiline(first.objective)}</td>
+        <th>Priority</th><td>${htmlEscape(first.priority)}</td>
+      </tr>
+      <tr>
+        <th>Inter Test Case Dependencies</th><td colspan="3">${htmlMultiline(first.interDependencies || 'N/A')}</td>
+        <th>Regression</th><td>${htmlEscape(first.regression || 'yes')}</td>
+      </tr>
+      <tr>
+        <th>Test Data Preparation</th><td colspan="3">${htmlMultiline(first.testDataPreparation || first.testData || '')}</td>
+        <th>Platform</th><td>${htmlEscape(first.platform || 'Web')}</td>
+      </tr>
+      <tr>
+        <th>Notes/References</th><td colspan="3">${htmlMultiline(first.notes || 'N/A')}</td>
+        <th>Tools</th><td>${htmlEscape(first.tools || 'Playwright Chromium')}</td>
+      </tr>
+    </table>
+    <table class="signatures">
+      <tr><th>Role</th><th>Name</th><th>Signature</th><th>Date</th></tr>
+      <tr><td>Tester</td><td>${htmlEscape(first.testerName || '')}</td><td></td><td>${htmlEscape(first.reviewDate || today)}</td></tr>
+      <tr><td>Reviewer</td><td>${htmlEscape(first.reviewerName || '')}</td><td></td><td></td></tr>
+    </table>
+  ` : '';
+  const html = `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>${htmlEscape(title)}</title>
+  <style>
+    body { font-family: Arial, sans-serif; color: #111827; }
+    h1 { font-size: 20px; margin: 0 0 16px; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 18px; }
+    th, td { border: 1px solid #111; padding: 7px; vertical-align: top; font-size: 12px; }
+    th { background: #d9d9d9; font-weight: 700; text-align: left; }
+    .meta th { width: 16%; }
+    .case-title { font-size: 16px; font-weight: 700; margin: 22px 0 8px; }
+    .evidence-img { max-width: 420px; max-height: 260px; display: block; margin-top: 8px; }
+    .image-ref { margin-top: 8px; color: #374151; font-size: 11px; }
+  </style>
+</head>
+<body>
+  <h1>${htmlEscape(title)}</h1>
+  ${headerRows}
+  <table class="steps">
+    <tr>
+      <th>Test #</th>
+      <th>Action / Input Data</th>
+      <th>Expected Results</th>
+      <th>Actual Results / Comments</th>
+      <th>Pass/Fail</th>
+      <th>Defect ID</th>
+    </tr>
+    ${rows.map((row, index) => `
+      <tr>
+        <td>${index + 1}</td>
+        <td>
+          <strong>${htmlEscape(row.caseId)} ${htmlEscape(row.title)}</strong><br>
+          ${htmlMultiline(row.actionInputData || row.steps || row.objective)}
+          ${officeImage(row.inputImage)}
+        </td>
+        <td>${htmlMultiline(row.expectedResult)}</td>
+        <td>
+          ${htmlMultiline(row.actualResult || '')}
+          ${officeImage(row.actualImage)}
+        </td>
+        <td>${htmlEscape(row.status || '')}</td>
+        <td>${htmlEscape(row.defectId || '')}</td>
+      </tr>
+    `).join('')}
+  </table>
+</body>
+</html>`;
+
+  fs.writeFileSync(filePath, html, 'utf-8');
+  return { fileName, filePath };
+}
+
+function writeOfficeCompanionFiles(rows: TestcaseFileRow[], prefix: string) {
+  const excel = writeOfficeHtmlFile(rows, prefix, 'xls', 'QC Testcase Workbook');
+  const doc = writeOfficeHtmlFile(rows, prefix, 'doc', 'QC Testcase Document');
+
+  return {
+    excelFileName: excel.fileName,
+    docFileName: doc.fileName,
+    excelDownloadUrl: `/api/testcase-files/download/${encodeURIComponent(excel.fileName)}`,
+    docDownloadUrl: `/api/testcase-files/download/${encodeURIComponent(doc.fileName)}`,
+  };
+}
+
+async function writeRunResultCsv(runId: string): Promise<{ fileName: string; filePath: string; excelFileName: string; docFileName: string }> {
   const results = await prisma.testResult.findMany({
     where: { runId },
     orderBy: { caseCode: 'asc' },
   });
-  const rows: TestcaseFileRow[] = results.map((result) => ({
-    caseId: result.caseCode,
-    module: '',
-    feature: '',
-    title: result.caseName,
-    objective: result.aiDiagnosis || '',
-    preconditions: '',
-    testData: '',
-    steps: '',
-    expectedResult: result.expectedResult || '',
-    priority: '',
-    severity: '',
-    testType: '',
-    automationCandidate: '',
-    automationKind: '',
-    selector: '',
-    expectedText: '',
-    status: result.status,
-    actualResult: result.errorMessage || result.aiDiagnosis || result.status,
-    notes: '',
-    durationMs: String(result.durationMs || 0),
-  }));
+  const rows: TestcaseFileRow[] = results.map((result) => {
+    const extra = parseJsonText(result.aiDiagnosis);
+
+    return {
+      caseId: result.caseCode,
+      projectId: '',
+      projectName: '',
+      module: typeof extra.module === 'string' ? extra.module : '',
+      requirementId: typeof extra.requirementId === 'string' ? extra.requirementId : '',
+      feature: typeof extra.feature === 'string' ? extra.feature : '',
+      title: result.caseName,
+      objective: typeof extra.description === 'string' ? extra.description : '',
+      interDependencies: typeof extra.interDependencies === 'string' ? extra.interDependencies : '',
+      preconditions: typeof extra.preconditions === 'string' ? extra.preconditions : '',
+      testDataPreparation: typeof extra.testDataPreparation === 'string' ? extra.testDataPreparation : '',
+      testData: typeof extra.testData === 'string' ? extra.testData : '',
+      steps: Array.isArray(extra.steps)
+        ? (extra.steps as TestCaseStep[]).map((step, index) => `${index + 1}. ${step.title}: ${step.detail}`).join('\n')
+        : '',
+      actionInputData: typeof extra.actionInputData === 'string' ? extra.actionInputData : '',
+      expectedResult: result.expectedResult || '',
+      priority: typeof extra.priority === 'string' ? extra.priority : '',
+      regression: typeof extra.regression === 'string' ? extra.regression : '',
+      platform: typeof extra.platform === 'string' ? extra.platform : '',
+      tools: typeof extra.tools === 'string' ? extra.tools : '',
+      severity: typeof extra.severity === 'string' ? extra.severity : '',
+      testType: typeof extra.testType === 'string' ? extra.testType : '',
+      automationCandidate: typeof extra.automationCandidate === 'string' ? extra.automationCandidate : '',
+      automationKind: typeof extra.automationKind === 'string' ? extra.automationKind : '',
+      selector: typeof extra.selector === 'string' ? extra.selector : '',
+      expectedText: '',
+      inputImage: typeof extra.inputImage === 'string' ? extra.inputImage : '',
+      actualImage: typeof extra.actualImage === 'string' ? extra.actualImage : '',
+      screenshotPolicy: typeof extra.screenshotPolicy === 'string' ? extra.screenshotPolicy : '',
+      status: result.status,
+      actualResult: cleanOutputText(result.errorMessage || (typeof extra.actual === 'string' ? extra.actual : result.status)),
+      defectId: typeof extra.defectId === 'string' ? extra.defectId : '',
+      testerName: typeof extra.testerName === 'string' ? extra.testerName : '',
+      reviewerName: typeof extra.reviewerName === 'string' ? extra.reviewerName : '',
+      reviewDate: typeof extra.reviewDate === 'string' ? extra.reviewDate : '',
+      notes: typeof extra.notes === 'string' ? extra.notes : '',
+      durationMs: String(result.durationMs || 0),
+    };
+  });
   const file = writeTestcaseCsvFile(rows, `results-${runId}`);
+  const officeFiles = writeOfficeCompanionFiles(rows, `results-${runId}`);
 
   await prisma.artifact.create({
     data: {
@@ -1677,11 +2019,175 @@ async function writeRunResultCsv(runId: string): Promise<{ fileName: string; fil
       path: file.filePath,
     },
   });
+  await prisma.artifact.createMany({
+    data: [
+      {
+        id: newId('artifact'),
+        runId,
+        type: 'result-excel',
+        path: testcaseFilePath(officeFiles.excelFileName),
+      },
+      {
+        id: newId('artifact'),
+        runId,
+        type: 'result-doc',
+        path: testcaseFilePath(officeFiles.docFileName),
+      },
+    ],
+  });
 
   return {
     fileName: file.fileName,
     filePath: file.filePath,
+    excelFileName: officeFiles.excelFileName,
+    docFileName: officeFiles.docFileName,
   };
+}
+
+function resultToSourceRow(result: any): TestcaseFileRow {
+  const extra = parseJsonText(result.aiDiagnosis);
+
+  return {
+    caseId: result.caseCode,
+    projectId: '',
+    projectName: '',
+    module: typeof extra.module === 'string' ? extra.module : '',
+    requirementId: typeof extra.requirementId === 'string' ? extra.requirementId : '',
+    feature: typeof extra.feature === 'string' ? extra.feature : '',
+    title: result.caseName,
+    objective: typeof extra.description === 'string' ? extra.description : '',
+    interDependencies: typeof extra.interDependencies === 'string' ? extra.interDependencies : '',
+    preconditions: typeof extra.preconditions === 'string' ? extra.preconditions : '',
+    testDataPreparation: typeof extra.testDataPreparation === 'string' ? extra.testDataPreparation : '',
+    testData: typeof extra.testData === 'string' ? extra.testData : '',
+    steps: Array.isArray(extra.steps)
+      ? (extra.steps as TestCaseStep[]).map((step, index) => `${index + 1}. ${step.title}: ${step.detail}`).join('\n')
+      : '',
+    actionInputData: typeof extra.actionInputData === 'string' ? extra.actionInputData : '',
+    expectedResult: result.expectedResult || '',
+    priority: typeof extra.priority === 'string' ? extra.priority : '',
+    regression: typeof extra.regression === 'string' ? extra.regression : '',
+    platform: typeof extra.platform === 'string' ? extra.platform : '',
+    tools: typeof extra.tools === 'string' ? extra.tools : '',
+    severity: typeof extra.severity === 'string' ? extra.severity : '',
+    testType: typeof extra.testType === 'string' ? extra.testType : '',
+    automationCandidate: typeof extra.automationCandidate === 'string' ? extra.automationCandidate : '',
+    automationKind: typeof extra.automationKind === 'string' ? extra.automationKind : '',
+    selector: typeof extra.selector === 'string' ? extra.selector : '',
+    expectedText: typeof extra.expectedText === 'string' ? extra.expectedText : '',
+    inputImage: typeof extra.inputImage === 'string' ? extra.inputImage : '',
+    actualImage: '',
+    screenshotPolicy: typeof extra.screenshotPolicy === 'string' ? extra.screenshotPolicy : '',
+    status: '',
+    actualResult: '',
+    defectId: '',
+    testerName: typeof extra.testerName === 'string' ? extra.testerName : '',
+    reviewerName: typeof extra.reviewerName === 'string' ? extra.reviewerName : '',
+    reviewDate: typeof extra.reviewDate === 'string' ? extra.reviewDate : '',
+    notes: typeof extra.notes === 'string' ? extra.notes : '',
+    durationMs: '',
+  };
+}
+
+async function saveTestcaseFileHistory(input: {
+  url: string;
+  rows: TestcaseFileRow[];
+  filePath: string;
+  excelFileName: string;
+  docFileName: string;
+  aiExplanation?: string;
+  userRequest?: string;
+  context?: RunContext;
+}): Promise<TestRun> {
+  const runId = newId('run');
+  const rawOutputPath = rawRunPath(runId);
+  writeRawRunData(runId, {
+    aiExplanation: input.aiExplanation || '',
+    generatedCode: '',
+    stdout: '',
+    stderr: '',
+  });
+
+  await prisma.testRun.create({
+    data: {
+      id: runId,
+      projectId: input.context?.projectId,
+      suiteId: input.context?.suiteId,
+      targetId: input.context?.targetId,
+      url: input.url,
+      status: 'generated',
+      total: input.rows.length,
+      passed: 0,
+      failed: 0,
+      skipped: input.rows.length,
+      durationMs: 0,
+      rawOutputPath,
+      userRequest: input.userRequest || 'Generated testcase file',
+      stdout: '',
+      stderr: '',
+      generatedCode: '',
+      results: {
+        create: input.rows.map((row, index) => ({
+          id: newId('result'),
+          ...testResultPayload(rowToPreviewCase({
+            ...row,
+            status: 'pending',
+            actualResult: 'Generated only. Not run by automation yet.',
+          }), index),
+          status: 'pending',
+          durationMs: 0,
+        })),
+      },
+      artifacts: {
+        create: [
+          {
+            id: newId('artifact'),
+            type: 'raw-log',
+            path: rawOutputPath,
+          },
+          {
+            id: newId('artifact'),
+            type: 'testcase-csv',
+            path: input.filePath,
+          },
+          {
+            id: newId('artifact'),
+            type: 'testcase-excel',
+            path: testcaseFilePath(input.excelFileName),
+          },
+          {
+            id: newId('artifact'),
+            type: 'testcase-doc',
+            path: testcaseFilePath(input.docFileName),
+          },
+        ],
+      },
+    },
+    include: {
+      project: true,
+      suite: true,
+      target: true,
+      results: true,
+      artifacts: true,
+    },
+  });
+
+  const savedRun = await prisma.testRun.findUnique({
+    where: { id: runId },
+    include: {
+      project: true,
+      suite: true,
+      target: true,
+      results: { orderBy: { caseCode: 'asc' } },
+      artifacts: true,
+    },
+  });
+
+  if (!savedRun) {
+    throw new Error('Could not read saved testcase file history record.');
+  }
+
+  return dbRunToApiRun(savedRun);
 }
 
 function testcaseText(value: unknown, fallback = ''): string {
@@ -1775,6 +2281,12 @@ function rowToPreviewCase(row: TestcaseFileRow): TestCaseDetail {
     severity: row.severity,
     testType: row.testType,
     automationCandidate: row.automationCandidate,
+    inputImage: row.inputImage,
+    actualImage: row.actualImage,
+    defectId: row.defectId,
+    testerName: row.testerName,
+    reviewerName: row.reviewerName,
+    reviewDate: row.reviewDate,
     selector: row.selector,
     expected: row.expectedResult,
     actual: row.actualResult || 'Not run yet.',
@@ -1789,7 +2301,33 @@ function rowToPreviewCase(row: TestcaseFileRow): TestCaseDetail {
   };
 }
 
-function fallbackProfessionalRows(userRequest: string, targetUrl: string, count = 24): TestcaseFileRow[] {
+const MIN_TESTCASE_FILE_ROWS = 40;
+const DEFAULT_TESTCASE_FILE_ROWS = 40;
+const MAX_TESTCASE_FILE_ROWS = 80;
+
+function clampTestcaseCount(value: unknown, fallback = DEFAULT_TESTCASE_FILE_ROWS): number {
+  const numeric = typeof value === 'number'
+    ? value
+    : typeof value === 'string'
+      ? Number.parseInt(value, 10)
+      : Number.NaN;
+
+  if (!Number.isFinite(numeric)) {
+    return fallback;
+  }
+
+  return Math.min(MAX_TESTCASE_FILE_ROWS, Math.max(MIN_TESTCASE_FILE_ROWS, Math.round(numeric)));
+}
+
+function recommendedCaseCountFromAi(parsed: Record<string, unknown>): number {
+  const strategy = parsed.coverageStrategy && typeof parsed.coverageStrategy === 'object'
+    ? parsed.coverageStrategy as Record<string, unknown>
+    : {};
+
+  return clampTestcaseCount(strategy.recommendedCaseCount);
+}
+
+function fallbackProfessionalRows(userRequest: string, targetUrl: string, count = DEFAULT_TESTCASE_FILE_ROWS): TestcaseFileRow[] {
   const modules = [
     ['Availability', 'Target access', 'smoke', 'page_load'],
     ['Content', 'Visible content', 'functional', 'generic_visible_content'],
@@ -1804,39 +2342,66 @@ function fallbackProfessionalRows(userRequest: string, targetUrl: string, count 
     ['Runtime', 'Console and page errors', 'regression', 'no_console_errors'],
     ['Security', 'Safe rendered output', 'security', 'manual'],
   ];
+  const scenarioVariants = [
+    'baseline happy path',
+    'required data and content',
+    'empty state and missing content',
+    'edge input or uncommon state',
+    'navigation and workflow continuity',
+    'responsive and visual consistency',
+    'error handling and recovery',
+  ];
   const safeRequest = userRequest.trim() || 'the target page and its main user-facing behavior';
+  const safeCount = clampTestcaseCount(count);
 
-  return Array.from({ length: count }, (_, index) => {
+  return Array.from({ length: safeCount }, (_, index) => {
     const [module, feature, testType, automationKind] = modules[index % modules.length];
+    const scenario = scenarioVariants[Math.floor(index / modules.length) % scenarioVariants.length];
     const caseNumber = index + 1;
-    const priority = index < 6 ? 'high' : index < 18 ? 'medium' : 'low';
-    const severity = index < 4 ? 'critical' : index < 16 ? 'major' : 'minor';
+    const priority = index < 10 ? 'high' : index < 34 ? 'medium' : 'low';
+    const severity = index < 8 ? 'critical' : index < 30 ? 'major' : 'minor';
     const manual = automationKind === 'manual';
 
     return {
       caseId: `TC-${String(caseNumber).padStart(3, '0')}`,
+      projectId: '',
+      projectName: '',
       module,
+      requirementId: '',
       feature,
-      title: `${feature} covers ${safeRequest}`.slice(0, 120),
-      objective: `Verify ${feature.toLowerCase()} for ${safeRequest}.`,
+      title: `${feature} - ${scenario} for ${safeRequest}`.slice(0, 120),
+      objective: `Verify ${feature.toLowerCase()} for the ${scenario} scenario of ${safeRequest}.`,
+      interDependencies: 'N/A',
       preconditions: `Target URL is available: ${targetUrl}`,
+      testDataPreparation: userRequest.trim() ? userRequest.trim() : 'N/A',
       testData: userRequest.trim() ? userRequest.trim() : 'Default target content',
       steps: [
         'Open the configured target URL.',
-        `Review the ${feature.toLowerCase()} behavior.`,
+        `Review the ${feature.toLowerCase()} behavior for the ${scenario} scenario.`,
         'Compare the observed behavior with the expected result.',
         'Record pass/fail with actual evidence.',
       ].map((step, stepIndex) => `${stepIndex + 1}. ${step}`).join('\n'),
-      expectedResult: `${feature} should work correctly, expose clear information, and avoid user-facing errors.`,
+      actionInputData: '',
+      expectedResult: `${feature} should satisfy the ${scenario} scenario, expose clear information, and avoid user-facing errors.`,
       priority,
+      regression: 'yes',
+      platform: 'Web',
+      tools: manual ? 'Manual review' : 'Playwright Chromium',
       severity,
       testType,
       automationCandidate: manual ? 'no' : 'partial',
       automationKind,
       selector: '',
       expectedText: '',
+      inputImage: '',
+      actualImage: '',
+      screenshotPolicy: 'on-failure',
       status: '',
       actualResult: '',
+      defectId: '',
+      testerName: '',
+      reviewerName: '',
+      reviewDate: '',
       notes: manual ? 'Manual review recommended because this case requires product judgment.' : '',
       durationMs: '',
     };
@@ -1869,13 +2434,13 @@ Required QA thinking:
 2. Identify modules/features that should be covered.
 3. Identify risk areas.
 4. Decide which test types are needed: functional, UI/UX, validation, navigation, data display, forms, error/empty/loading states, permissions/auth if applicable, SEO, accessibility, performance, security, compatibility, edge and negative cases.
-5. Estimate a credible testcase count. Do not default to 6, 8, or 14. Broad requests should usually produce 24-60 cases.
+5. Estimate a credible testcase count. Do not default to 6, 8, 14, or 24. Use 40-80 cases depending on scope.
 6. Generate focused, reviewable testcase rows. Each row must have one clear objective and expected result.
 
 Return this exact JSON shape:
 {
   "coverageStrategy": {
-    "recommendedCaseCount": 32,
+    "recommendedCaseCount": 40,
     "rationale": "Why this amount is enough for the request.",
     "coverageGroups": ["Functional", "Navigation", "Validation"],
     "automationScope": "Which parts can be automated and which should stay manual.",
@@ -1884,21 +2449,32 @@ Return this exact JSON shape:
   "testcases": [
     {
       "caseId": "TC-001",
+      "projectId": "Optional project/reference id",
+      "projectName": "Optional project name",
       "module": "Module or page area",
+      "requirementId": "Optional requirement id",
       "feature": "Specific feature",
       "title": "Short testcase title",
       "objective": "What this testcase proves",
+      "interDependencies": "Other testcase ids or N/A",
       "preconditions": "Required setup before execution",
+      "testDataPreparation": "Data setup before executing the case",
       "testData": "Data/accounts/content needed",
       "steps": ["Step 1", "Step 2", "Step 3"],
+      "actionInputData": "Detailed action/input data. Leave empty if steps already describe it.",
       "expectedResult": "Clear expected result",
       "priority": "high",
+      "regression": "yes",
+      "platform": "Web",
+      "tools": "Playwright Chromium",
       "severity": "major",
       "testType": "functional",
       "automationCandidate": "yes",
       "automationKind": "page_load",
       "selector": "",
       "expectedText": "",
+      "inputImage": "",
+      "screenshotPolicy": "on-failure",
       "notes": ""
     }
   ]
@@ -1910,17 +2486,76 @@ Allowed automationCandidate values: yes, no, partial.
 Allowed automationKind values: manual, page_load, title_exists, selector_visible, body_text_contains, meta_description_exists, canonical_exists, h1_exists, html_lang_exists, viewport_exists, link_health_basic, image_resources_ok, no_console_errors, no_page_errors, form_validation, generic_visible_content.
 
 Rules:
-- The testcases array should contain the recommended number of rows unless the request is extremely narrow.
+- recommendedCaseCount must be between 40 and 80.
+- The testcases array must contain the recommendedCaseCount number of rows unless the request is extremely narrow.
+- Broad pages, dashboards, ecommerce pages, forms, data pages, and mixed SEO/content/UI requests should usually use 45-80 rows.
 - Prefer practical QC depth over generic checks.
 - Include positive, negative, edge, UI/content, data, navigation, error state, and manual review cases when relevant.
 - Mark cases as manual/no when they require human judgment or unsupported automation.
+- Put inputImage as an empty placeholder unless the user explicitly supplies an existing image path/URL.
+- Use screenshotPolicy "on-failure" for automatable cases and "manual" for manual-only review cases.
 - Do not invent credentials or destructive actions.
 - Do not include load tests, DDoS, stress traffic, or high-concurrency tests.
 - Keep each testcase independently executable and understandable in Excel.
 `;
 }
 
-function normalizeProfessionalRows(parsed: Record<string, unknown>, fallbackRows: TestcaseFileRow[]): TestcaseFileRow[] {
+function rowSignature(row: TestcaseFileRow): string {
+  return `${row.module}|${row.feature}|${row.title}`.toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+function normalizeCaseIds(rows: TestcaseFileRow[]): TestcaseFileRow[] {
+  return rows.map((row, index) => ({
+    ...row,
+    caseId: `TC-${String(index + 1).padStart(3, '0')}`,
+  }));
+}
+
+function completeRowsToTarget(
+  rows: TestcaseFileRow[],
+  fallbackRows: TestcaseFileRow[],
+  targetCount: number
+): TestcaseFileRow[] {
+  const target = clampTestcaseCount(targetCount);
+  const merged = rows.slice(0, MAX_TESTCASE_FILE_ROWS);
+  const seen = new Set(merged.map(rowSignature));
+
+  for (const fallbackRow of fallbackRows) {
+    if (merged.length >= target) {
+      break;
+    }
+
+    const signature = rowSignature(fallbackRow);
+
+    if (seen.has(signature)) {
+      continue;
+    }
+
+    seen.add(signature);
+    merged.push(fallbackRow);
+  }
+
+  let fallbackIndex = 0;
+  while (merged.length < target && fallbackRows.length) {
+    const fallbackRow = fallbackRows[fallbackIndex % fallbackRows.length];
+    merged.push({
+      ...fallbackRow,
+      title: `${fallbackRow.title} coverage extension ${fallbackIndex + 1}`.slice(0, 120),
+      notes: [fallbackRow.notes, 'Added by backend because AI returned fewer rows than its recommended coverage count.']
+        .filter(Boolean)
+        .join(' '),
+    });
+    fallbackIndex += 1;
+  }
+
+  return normalizeCaseIds(merged.slice(0, MAX_TESTCASE_FILE_ROWS));
+}
+
+function normalizeProfessionalRows(
+  parsed: Record<string, unknown>,
+  fallbackRows: TestcaseFileRow[],
+  targetCount: number
+): TestcaseFileRow[] {
   const rawCases = Array.isArray(parsed.testcases) ? parsed.testcases : [];
   const rows = rawCases.map((item, index) => {
     const row = item && typeof item === 'object' ? item as Record<string, unknown> : {};
@@ -1928,32 +2563,52 @@ function normalizeProfessionalRows(parsed: Record<string, unknown>, fallbackRows
 
     return {
       caseId: testcaseText(row.caseId, `TC-${String(index + 1).padStart(3, '0')}`),
+      projectId: testcaseText(row.projectId),
+      projectName: testcaseText(row.projectName),
       module: testcaseText(row.module, 'General'),
+      requirementId: testcaseText(row.requirementId),
       feature: testcaseText(row.feature, 'Page behavior'),
       title: testcaseText(row.title, `Generated testcase ${index + 1}`),
       objective: testcaseText(row.objective, testcaseText(row.description, 'Verify the expected behavior.')),
+      interDependencies: testcaseText(row.interDependencies, 'N/A'),
       preconditions: testcaseText(row.preconditions, 'Target URL is reachable.'),
+      testDataPreparation: testcaseText(row.testDataPreparation, testcaseText(row.testData)),
       testData: testcaseText(row.testData),
       steps: testcaseListText(row.steps) || '1. Open the target URL.\n2. Execute the described check.\n3. Record the result.',
+      actionInputData: testcaseText(row.actionInputData),
       expectedResult: testcaseText(row.expectedResult, testcaseText(row.expected, 'The expected behavior should be correct.')),
       priority: normalizePriority(row.priority),
+      regression: testcaseText(row.regression, 'yes'),
+      platform: testcaseText(row.platform, 'Web'),
+      tools: testcaseText(row.tools, automationKind === 'manual' ? 'Manual review' : 'Playwright Chromium'),
       severity: normalizeSeverity(row.severity),
       testType: normalizeTestType(row.testType),
       automationCandidate: normalizeAutomationCandidate(row.automationCandidate, automationKind),
       automationKind,
       selector: testcaseText(row.selector),
       expectedText: testcaseText(row.expectedText),
+      inputImage: testcaseText(row.inputImage),
+      actualImage: testcaseText(row.actualImage),
+      screenshotPolicy: testcaseText(row.screenshotPolicy, automationKind === 'manual' ? 'manual' : 'on-failure'),
       status: '',
       actualResult: '',
+      defectId: testcaseText(row.defectId),
+      testerName: testcaseText(row.testerName),
+      reviewerName: testcaseText(row.reviewerName),
+      reviewDate: testcaseText(row.reviewDate),
       notes: testcaseText(row.notes),
       durationMs: '',
     };
   }).filter((row) => row.title && row.caseId);
 
-  return rows.length >= 8 ? rows : fallbackRows;
+  if (!rows.length) {
+    return normalizeCaseIds(fallbackRows.slice(0, targetCount));
+  }
+
+  return completeRowsToTarget(rows, fallbackRows, targetCount);
 }
 
-function buildCoverageExplanation(parsed: Record<string, unknown>, rows: TestcaseFileRow[], fallbackReason = ''): string {
+function buildCoverageExplanation(parsed: Record<string, unknown>, rows: TestcaseFileRow[], fallbackReason = '', targetCount = rows.length): string {
   const strategy = parsed.coverageStrategy && typeof parsed.coverageStrategy === 'object'
     ? parsed.coverageStrategy as Record<string, unknown>
     : {};
@@ -1965,7 +2620,8 @@ function buildCoverageExplanation(parsed: Record<string, unknown>, rows: Testcas
     : [];
 
   return [
-    `Recommended coverage: ${rows.length} test cases.`,
+    `Recommended coverage target: ${targetCount} test cases.`,
+    `Generated testcase rows: ${rows.length}.`,
     testcaseText(strategy.rationale, fallbackReason || 'The suite is split into focused QA cases so each result maps to one risk or behavior.'),
     groups.length ? `Coverage groups: ${groups.join(', ')}.` : '',
     testcaseText(strategy.automationScope, 'Automation is marked per row; manual cases remain editable and importable.'),
@@ -1988,7 +2644,7 @@ async function generateProfessionalTestcaseFile(
 }> {
   const startedAt = Date.now();
   const aiPrompt = buildProfessionalTestcasePrompt(url, userRequest, suite, target);
-  const fallbackRows = fallbackProfessionalRows(userRequest, url, 24);
+  const defaultFallbackRows = fallbackProfessionalRows(userRequest, url, DEFAULT_TESTCASE_FILE_ROWS);
 
   try {
     const aiResponse = await askLocalAI([
@@ -2002,11 +2658,13 @@ async function generateProfessionalTestcaseFile(
       },
     ]);
     const parsed = parseAiJsonObject(aiResponse);
-    const rows = normalizeProfessionalRows(parsed, fallbackRows);
+    const targetCount = recommendedCaseCountFromAi(parsed);
+    const fallbackRows = fallbackProfessionalRows(userRequest, url, targetCount);
+    const rows = normalizeProfessionalRows(parsed, fallbackRows, targetCount);
 
     return {
       rows,
-      aiExplanation: buildCoverageExplanation(parsed, rows),
+      aiExplanation: buildCoverageExplanation(parsed, rows, '', targetCount),
       aiPrompt,
       aiResponse,
       aiStatus: 'passed',
@@ -2016,11 +2674,12 @@ async function generateProfessionalTestcaseFile(
     const aiResponse = error instanceof Error ? error.message : String(error);
 
     return {
-      rows: fallbackRows,
+      rows: defaultFallbackRows,
       aiExplanation: buildCoverageExplanation(
         {},
-        fallbackRows,
-        `AI testcase JSON could not be parsed, so Passmark generated a safe QC fallback file. Reason: ${aiResponse}`
+        defaultFallbackRows,
+        `AI testcase JSON could not be parsed, so Passmark generated a safe QC fallback file. Reason: ${aiResponse}`,
+        DEFAULT_TESTCASE_FILE_ROWS
       ),
       aiPrompt,
       aiResponse,
@@ -2115,7 +2774,7 @@ function renderImportedCaseBody(row: TestcaseFileRow): string {
   }
 }
 
-function renderImportedCsvSpec(url: string, rows: TestcaseFileRow[], auth?: AuthInput): GeneratedSpecResult {
+function renderImportedCsvSpec(url: string, rows: TestcaseFileRow[], runId: string, auth?: AuthInput): GeneratedSpecResult {
   const testBlocks = rows.map((row, index) => {
     const caseCode = row.caseId || generatedCaseCode(index);
     const title = JSON.stringify(`${caseCode} ${row.title}`.replace(/\s+/g, ' ').trim());
@@ -2132,8 +2791,11 @@ ${renderImportedCaseBody(row)}
   });`;
   }).join('\n\n');
   const code = `import { test, expect } from '@playwright/test';
+import * as path from 'path';
 
 const SITE_URL = ${JSON.stringify(url)};
+const EVIDENCE_DIR = ${JSON.stringify(testcaseFileDir())};
+const RUN_ID = ${JSON.stringify(runId)};
 
 async function openTarget(page) {
   const response = await page.goto(SITE_URL, {
@@ -2144,7 +2806,27 @@ async function openTarget(page) {
   return response;
 }
 
+function evidenceFileName(title) {
+  const match = title.match(/\\b[A-Z]+-\\d+\\b/);
+  const caseCode = (match ? match[0] : 'case').toLowerCase().replace(/[^a-z0-9_-]+/g, '-');
+  return \`\${RUN_ID}-\${caseCode}-actual.png\`;
+}
+
 test.describe('Imported testcase file', () => {
+  test.afterEach(async ({ page }, testInfo) => {
+    if (testInfo.status === testInfo.expectedStatus) {
+      return;
+    }
+
+    const screenshotPath = path.join(EVIDENCE_DIR, evidenceFileName(testInfo.title));
+    try {
+      await page.screenshot({ path: screenshotPath, fullPage: true });
+      await testInfo.attach('actual-screenshot', { path: screenshotPath, contentType: 'image/png' });
+    } catch {
+      // Screenshot capture is best-effort so the real test failure remains the primary signal.
+    }
+  });
+
 ${testBlocks}
 });
 `;
@@ -2176,12 +2858,27 @@ function testResultPayload(testCase: TestCaseDetail, index: number) {
     caseName,
     status: testCase.status || 'pending',
     durationMs: Math.round(testCase.durationMs || 0),
-    errorMessage: testCase.error || '',
-    stackTrace: testCase.error || '',
+    errorMessage: cleanOutputText(testCase.error || ''),
+    stackTrace: cleanOutputText(testCase.error || ''),
     expectedResult: testCase.expected || '',
     aiDiagnosis: JSON.stringify({
       description: testCase.description || '',
-      actual: testCase.actual || '',
+      actual: cleanOutputText(testCase.actual || ''),
+      module: testCase.module || '',
+      feature: testCase.feature || '',
+      priority: testCase.priority || '',
+      severity: testCase.severity || '',
+      testType: testCase.testType || '',
+      automationCandidate: testCase.automationCandidate || '',
+      preconditions: testCase.preconditions || '',
+      testData: testCase.testData || '',
+      inputImage: testCase.inputImage || '',
+      actualImage: testCase.actualImage || '',
+      defectId: testCase.defectId || '',
+      testerName: testCase.testerName || '',
+      reviewerName: testCase.reviewerName || '',
+      reviewDate: testCase.reviewDate || '',
+      notes: testCase.notes || '',
       selector: testCase.selector || '',
       code: testCase.code || '',
       steps: testCase.steps || [],
@@ -2246,7 +2943,12 @@ async function initializeProgressiveRun(
   job: RunQueueJob,
   outputPath: string
 ): Promise<Array<{ id: string; testCase: TestCaseDetail; index: number }>> {
-  const cases = previewGeneratedCases(result.code, job.userRequest);
+  const cases = job.importedCases?.length
+    ? job.importedCases.map((row) => ({
+        ...rowToPreviewCase(row),
+        code: findTestSnippet(result.code, `${row.caseId} ${row.title}`.replace(/\s+/g, ' ').trim()) || '',
+      }))
+    : previewGeneratedCases(result.code, job.userRequest);
   const rawOutputPath = rawRunPath(runId);
 
   writeRawRunData(runId, {
@@ -2261,7 +2963,14 @@ async function initializeProgressiveRun(
   }));
 
   await prisma.$transaction(async (tx) => {
-    await tx.artifact.deleteMany({ where: { runId } });
+    await tx.artifact.deleteMany({
+      where: {
+        runId,
+        type: {
+          notIn: ['testcase-csv', 'testcase-excel', 'testcase-doc'],
+        },
+      },
+    });
     await tx.testResult.deleteMany({ where: { runId } });
     await tx.testRun.update({
       where: { id: runId },
@@ -2459,6 +3168,23 @@ function escapedGrep(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+function safeEvidenceSlug(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80) || 'testcase';
+}
+
+function evidenceFileName(runId: string, title: string): string {
+  const caseCode = caseCodeFromTitle(title) || 'case';
+  return `${runId}-${safeEvidenceSlug(caseCode)}-actual.png`;
+}
+
+function evidenceDownloadUrl(runId: string, title: string): string {
+  return `/api/testcase-files/download/${encodeURIComponent(evidenceFileName(runId, title))}`;
+}
+
 async function runOnePlaywrightCase(
   title: string,
   specPath: string,
@@ -2515,12 +3241,32 @@ async function runOnePlaywrightCase(
 async function updateProgressiveCase(
   resultId: string,
   testCase: TestCaseDetail,
-  index: number
+  index: number,
+  runId?: string
 ) {
   await prisma.testResult.update({
     where: { id: resultId },
     data: testResultPayload(testCase, index),
   });
+
+  if (runId && testCase.actualImage) {
+    const fileName = path.basename(testCase.actualImage.replace('/api/testcase-files/download/', ''));
+    const artifactPath = testcaseFilePath(decodeURIComponent(fileName));
+
+    if (fs.existsSync(artifactPath)) {
+      await prisma.artifact.upsert({
+        where: { id: `${resultId}-screenshot` },
+        update: { path: artifactPath },
+        create: {
+          id: `${resultId}-screenshot`,
+          runId,
+          resultId,
+          type: 'actual-screenshot',
+          path: artifactPath,
+        },
+      });
+    }
+  }
 }
 
 async function runPlaywrightProgressively(
@@ -2554,7 +3300,7 @@ async function runPlaywrightProgressively(
       ),
     };
 
-    await updateProgressiveCase(plannedCase.id, runningCase, plannedCase.index);
+    await updateProgressiveCase(plannedCase.id, runningCase, plannedCase.index, job.runId);
     await updateRunSummaryFromResults(job.runId, 'running', Date.now() - startedAt);
 
     const caseResult = await runOnePlaywrightCase(plannedCase.testCase.title, specPath, job.auth);
@@ -2572,8 +3318,20 @@ async function runPlaywrightProgressively(
       result.code,
       job.userRequest
     )[0];
+    const evidencePath = testcaseFilePath(evidenceFileName(job.runId, plannedCase.testCase.title));
+    const caseWithEvidence: TestCaseDetail = {
+      ...plannedCase.testCase,
+      ...enrichedCase,
+      inputImage: plannedCase.testCase.inputImage || enrichedCase.inputImage,
+      actualImage: fs.existsSync(evidencePath)
+        ? evidenceDownloadUrl(job.runId, plannedCase.testCase.title)
+        : enrichedCase.actualImage,
+      defectId: enrichedCase.status === 'passed' || enrichedCase.status === 'skipped'
+        ? plannedCase.testCase.defectId
+        : plannedCase.testCase.defectId || `AUTO-${plannedCase.testCase.caseId || plannedCase.index + 1}`,
+    };
 
-    await updateProgressiveCase(plannedCase.id, enrichedCase, plannedCase.index);
+    await updateProgressiveCase(plannedCase.id, caseWithEvidence, plannedCase.index, job.runId);
     writeRawRunData(job.runId, {
       stdout,
       stderr,
@@ -2683,6 +3441,27 @@ async function createQueuedRun(job: RunQueueJob): Promise<TestRun> {
       url: job.url,
       status: 'queued',
       userRequest: job.userRequest || '',
+      artifacts: job.testcaseFilePath || job.testcaseExcelFileName || job.testcaseDocFileName
+        ? {
+            create: [
+              ...(job.testcaseFilePath ? [{
+                id: newId('artifact'),
+                type: 'testcase-csv',
+                path: job.testcaseFilePath,
+              }] : []),
+              ...(job.testcaseExcelFileName ? [{
+                id: newId('artifact'),
+                type: 'testcase-excel',
+                path: testcaseFilePath(job.testcaseExcelFileName),
+              }] : []),
+              ...(job.testcaseDocFileName ? [{
+                id: newId('artifact'),
+                type: 'testcase-doc',
+                path: testcaseFilePath(job.testcaseDocFileName),
+              }] : []),
+            ],
+          }
+        : undefined,
     },
     include: {
       project: true,
@@ -2718,7 +3497,7 @@ async function executeRunQueueJob(job: RunQueueJob) {
       ? ((await prisma.testSuite.findUnique({ where: { id: job.context.suiteId } })) as unknown as TestSuite | undefined)
       : undefined;
     const result = job.importedCases?.length
-      ? renderImportedCsvSpec(job.url, job.importedCases, job.auth)
+      ? renderImportedCsvSpec(job.url, job.importedCases, job.runId, job.auth)
       : await generateSpecForRun(job.url, job.userRequest, job.auth, suite);
     await runPlaywrightProgressively(job, result, result.outputPath);
   } catch (error) {
@@ -3032,9 +3811,11 @@ const server = http.createServer(async (request, response) => {
         return;
       }
 
+      const contentType = mimeTypeForPath(filePath);
+      const disposition = contentType.startsWith('image/') ? 'inline' : 'attachment';
       response.writeHead(200, {
-        'Content-Type': 'text/csv; charset=utf-8',
-        'Content-Disposition': `attachment; filename="${path.basename(fileName)}"`,
+        'Content-Type': contentType,
+        'Content-Disposition': `${disposition}; filename="${path.basename(fileName)}"`,
         'Cache-Control': 'no-store',
       });
       fs.createReadStream(filePath).pipe(response);
@@ -3054,6 +3835,38 @@ const server = http.createServer(async (request, response) => {
         },
       });
       sendJson(response, 200, runs.map((run) => toRunSummary(dbRunToApiRun(run))));
+      return;
+    }
+
+    const sourceDownloadMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/testcase-source\/(csv|xls|doc)$/);
+    if (request.method === 'GET' && sourceDownloadMatch) {
+      const id = decodeURIComponent(sourceDownloadMatch[1]);
+      const format = sourceDownloadMatch[2] as 'csv' | 'xls' | 'doc';
+      const run = await prisma.testRun.findUnique({
+        where: { id },
+        include: {
+          results: { orderBy: { caseCode: 'asc' } },
+        },
+      });
+
+      if (!run || !run.results.length) {
+        sendError(response, 404, 'Testcase source file not found');
+        return;
+      }
+
+      const rows = run.results.map(resultToSourceRow);
+      const file = format === 'csv'
+        ? writeTestcaseCsvFile(rows, `source-${id}`)
+        : writeOfficeHtmlFile(rows, `source-${id}`, format, 'QC Source Testcase File');
+      const fileName = format === 'csv' ? file.fileName : file.fileName;
+      const filePath = format === 'csv' ? file.filePath : file.filePath;
+
+      response.writeHead(200, {
+        'Content-Type': mimeTypeForPath(filePath),
+        'Content-Disposition': `attachment; filename="${path.basename(fileName)}"`,
+        'Cache-Control': 'no-store',
+      });
+      fs.createReadStream(filePath).pipe(response);
       return;
     }
 
@@ -3087,6 +3900,26 @@ const server = http.createServer(async (request, response) => {
       const result = await generateProfessionalTestcaseFile(url, userRequest, suite, target);
       const rows = result.rows;
       const file = writeTestcaseCsvFile(rows, 'ai-testcases');
+      const officeFiles = writeOfficeCompanionFiles(rows, 'ai-testcases');
+      const historyRun = await saveTestcaseFileHistory({
+        url,
+        rows,
+        filePath: file.filePath,
+        excelFileName: officeFiles.excelFileName,
+        docFileName: officeFiles.docFileName,
+        aiExplanation: result.aiExplanation,
+        userRequest: `Generated testcase file: ${userRequest}`,
+        context: {
+          projectId: project?.id,
+          projectName: project?.name,
+          suiteId: suite?.id,
+          suiteName: suite?.name,
+          suiteType: suite?.type,
+          targetId: target?.id,
+          targetName: target?.name,
+          targetType: target?.type,
+        },
+      });
 
       await prisma.aIRequestLog.create({
         data: {
@@ -3110,26 +3943,54 @@ const server = http.createServer(async (request, response) => {
         targetName: target?.name,
         fileName: file.fileName,
         downloadUrl: `/api/testcase-files/download/${encodeURIComponent(file.fileName)}`,
+        excelDownloadUrl: officeFiles.excelDownloadUrl,
+        docDownloadUrl: officeFiles.docDownloadUrl,
         csvContent: file.csvContent,
         aiExplanation: result.aiExplanation,
         rows,
         cases: rows.map(rowToPreviewCase),
+        historyRun: toRunSummary(historyRun),
       });
       return;
     }
 
     if (request.method === 'POST' && requestUrl.pathname === '/api/testcase-files/import') {
       const body = await readBody(request);
+      const { project, suite, target } = await resolveProjectSuiteTargetContext(body.projectId, body.suiteId, body.targetId);
+      const url = resolveRunUrl(body.url, project, target);
       const csvContent = typeof body.csvContent === 'string' ? body.csvContent : '';
       const rows = testcaseRowsFromCsv(csvContent);
       const file = writeTestcaseCsvFile(rows, 'imported-testcases');
+      const officeFiles = writeOfficeCompanionFiles(rows, 'imported-testcases');
+      const historyRun = await saveTestcaseFileHistory({
+        url,
+        rows,
+        filePath: file.filePath,
+        excelFileName: officeFiles.excelFileName,
+        docFileName: officeFiles.docFileName,
+        aiExplanation: `Imported ${rows.length} testcase rows. This record is a testcase file only and has not run automation yet.`,
+        userRequest: `Imported testcase file: ${typeof body.fileName === 'string' ? body.fileName : file.fileName}`,
+        context: {
+          projectId: project?.id,
+          projectName: project?.name,
+          suiteId: suite?.id,
+          suiteName: suite?.name,
+          suiteType: suite?.type,
+          targetId: target?.id,
+          targetName: target?.name,
+          targetType: target?.type,
+        },
+      });
 
       sendJson(response, 200, {
         fileName: file.fileName,
         downloadUrl: `/api/testcase-files/download/${encodeURIComponent(file.fileName)}`,
+        excelDownloadUrl: officeFiles.excelDownloadUrl,
+        docDownloadUrl: officeFiles.docDownloadUrl,
         csvContent: file.csvContent,
         rows,
         cases: rows.map(rowToPreviewCase),
+        historyRun: toRunSummary(historyRun),
       });
       return;
     }
@@ -3142,6 +4003,8 @@ const server = http.createServer(async (request, response) => {
       const importedCases = testcaseRowsFromCsv(csvContent);
       const auth = normalizeAuth(body.auth);
       const fileName = typeof body.fileName === 'string' ? body.fileName : 'imported-testcases.csv';
+      const testcaseFile = writeTestcaseCsvFile(importedCases, 'run-source-testcases');
+      const testcaseOfficeFiles = writeOfficeCompanionFiles(importedCases, 'run-source-testcases');
       const job: RunQueueJob = {
         runId: newId('run'),
         url,
@@ -3149,6 +4012,9 @@ const server = http.createServer(async (request, response) => {
         auth,
         importedCases,
         sourceFileName: fileName,
+        testcaseFilePath: testcaseFile.filePath,
+        testcaseExcelFileName: testcaseOfficeFiles.excelFileName,
+        testcaseDocFileName: testcaseOfficeFiles.docFileName,
         context: {
           projectId: project?.id,
           projectName: project?.name,
