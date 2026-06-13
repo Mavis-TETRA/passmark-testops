@@ -6,7 +6,7 @@
     <title>Passmark AI Test Console</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
-    <link rel="stylesheet" href="/app.css">
+    <link rel="stylesheet" href="/app.css?v=workspace-tree">
   </head>
   <body>
     <main class="shell">
@@ -37,7 +37,13 @@
           </a>
         </nav>
         <section class="sidebar-projects">
-          <p>Projects</p>
+          <div class="sidebar-project-heading">
+            <p data-i18n="nav.projects">Projects</p>
+            <div class="sidebar-project-actions">
+              <button type="button" id="newSidebarProjectButton" title="New project" data-i18n="sidebar.newProject">New project</button>
+              <button type="button" id="newSidebarItemButton" title="New item" data-i18n="sidebar.newItem">New item</button>
+            </div>
+          </div>
           <div class="sidebar-project-list" id="sidebarProjectList">
             <span>No projects yet</span>
           </div>
@@ -357,7 +363,7 @@
         </section>
 
         <header class="chat-topbar" data-page-section="run">
-          <strong>Passmark TestOps</strong>
+          <strong id="workspaceTitle">Passmark TestOps</strong>
           <span>...</span>
         </header>
 
@@ -517,6 +523,8 @@
           </div>
           <div class="file-state-actions">
             <a class="file-primary-action disabled" id="downloadCaseFileLink" href="#" aria-disabled="true" data-i18n="fileFlow.download">Download CSV</a>
+            <a class="file-secondary-action disabled" id="downloadCaseExcelLink" href="#" aria-disabled="true" data-i18n="fileFlow.downloadExcel">Download Excel</a>
+            <a class="file-secondary-action disabled" id="downloadCaseDocLink" href="#" aria-disabled="true" data-i18n="fileFlow.downloadDoc">Download Word</a>
             <label class="file-secondary-action">
               <span data-i18n="fileFlow.import">Import CSV</span>
               <input id="caseFileInput" type="file" accept=".csv,text/csv">
@@ -584,7 +592,7 @@
           </article>
         </section>
 
-        <section class="panel history-panel" data-page-section="reports">
+        <section class="panel history-panel" data-page-section="run reports">
           <div class="panel-heading">
             <h2 data-i18n="history.title">Run history</h2>
             <span id="historyCount" data-i18n="history.lastRuns">Last 50 runs</span>
@@ -699,7 +707,7 @@
                 <span>Run Center</span>
                 <span>Backend API</span>
                 <span>Ollama</span>
-                <span>CSV file</span>
+                <span>QC file</span>
                 <span>Playwright</span>
                 <span>Reports</span>
               </div>
@@ -758,7 +766,7 @@
             <section id="docs-run-flow" class="docs-section">
               <h2 data-i18n="docs.runFlowTitle">5. Run Test Flow và Queue</h2>
               <ol class="docs-steps">
-                <li><span data-i18n="docs.runStepClick">User selects</span> <strong>Create testcase file</strong> <span data-i18n="docs.runStepClickSuffix">and clicks</span> <strong>Generate CSV</strong>.</li>
+                <li><span data-i18n="docs.runStepClick">User selects</span> <strong>Create testcase file</strong> <span data-i18n="docs.runStepClickSuffix">and clicks</span> <strong>Generate testcase file</strong>.</li>
                 <li><span data-i18n="docs.runStepQueuedPrefix">Backend asks Ollama for</span> <code>coverageStrategy</code> <span data-i18n="docs.runStepQueuedMiddle">and a list of</span> <code>testcases</code>.</li>
                 <li><span data-i18n="docs.runStepPoll">Frontend shows the CSV file, row count, download/import controls, and the detail panel.</span></li>
                 <li><span data-i18n="docs.runStepWorkerPrefix">The tester can edit the CSV outside the app, then import it in</span> <code>Auto test from file</code>.</li>
@@ -935,6 +943,6 @@ LOCAL_AI_KEEP_ALIVE=2m</pre>
       </section>
     </div>
 
-    <script src="/app.js"></script>
+    <script src="/app.js?v=workspace-tree"></script>
   </body>
 </html>
