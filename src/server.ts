@@ -6,7 +6,7 @@ import path from 'path';
 import { promisify } from 'util';
 import { AuthConfig, generatePlaywrightTest } from '../scripts/generate-playwright-test';
 import { createDefaultSuiteForProject, createDefaultTargetForProject, ensureDefaultData, newId, prisma } from './db';
-import { getConfiguredLocalAIModel } from './local-ai-client';
+import { askLocalAI, getConfiguredLocalAIModel } from './local-ai-client';
 import { generateSeoTestPlan } from './seo-test-plan';
 import { writeSeoBasicSpec } from './seo-template-renderer';
 
@@ -88,6 +88,7 @@ type TestRun = {
   stdout: string;
   stderr: string;
   errorReason?: string;
+  resultCsvUrl?: string;
 };
 
 type TestRunSummary = Omit<TestRun, 'stdout' | 'stderr'>;
@@ -95,11 +96,22 @@ type TestRunSummary = Omit<TestRun, 'stdout' | 'stderr'>;
 type TestRunStatus = 'queued' | 'running' | 'passed' | 'failed' | 'cancelled';
 
 type TestCaseDetail = {
+  caseId?: string;
+  module?: string;
+  feature?: string;
   title: string;
   status: string;
   durationMs: number;
   error?: string;
   description?: string;
+  objective?: string;
+  preconditions?: string;
+  testData?: string;
+  priority?: string;
+  severity?: string;
+  testType?: string;
+  automationCandidate?: string;
+  notes?: string;
   selector?: string;
   expected?: string;
   actual?: string;
@@ -146,12 +158,37 @@ type RunQueueJob = {
   userRequest: string;
   auth: AuthInput;
   context: RunContext;
+  importedCases?: TestcaseFileRow[];
+  sourceFileName?: string;
 };
 
 type GeneratedSpecResult = {
   outputPath: string;
   code: string;
   aiExplanation?: string;
+};
+
+type TestcaseFileRow = {
+  caseId: string;
+  module: string;
+  feature: string;
+  title: string;
+  objective: string;
+  preconditions: string;
+  testData: string;
+  steps: string;
+  expectedResult: string;
+  priority: string;
+  severity: string;
+  testType: string;
+  automationCandidate: string;
+  automationKind: string;
+  selector: string;
+  expectedText: string;
+  status?: string;
+  actualResult?: string;
+  notes?: string;
+  durationMs?: string;
 };
 
 const execFileAsync = promisify(execFile);
@@ -229,6 +266,9 @@ function readRunRawData(rawOutputPath?: string): Record<string, unknown> {
 function dbRunToApiRun(run: any): TestRun {
   const results = Array.isArray(run.results) ? run.results : [];
   const rawData = readRunRawData(run.rawOutputPath);
+  const resultCsvArtifact = Array.isArray(run.artifacts)
+    ? run.artifacts.find((artifact: any) => artifact.type === 'result-csv' && artifact.path)
+    : undefined;
   const supportedStatuses: TestRunStatus[] = ['queued', 'running', 'passed', 'failed', 'cancelled'];
   const status = supportedStatuses.includes(run.status) ? run.status : 'failed';
   const cases = results.map((result: any) => {
@@ -275,6 +315,9 @@ function dbRunToApiRun(run: any): TestRun {
     stdout: run.stdout,
     stderr: run.stderr,
     errorReason: deriveRunErrorReason(status, cases, run.stderr, run.stdout),
+    resultCsvUrl: resultCsvArtifact?.path
+      ? `/api/testcase-files/download/${encodeURIComponent(path.basename(resultCsvArtifact.path))}`
+      : undefined,
   };
 }
 
@@ -288,6 +331,73 @@ function parseJsonText(value: unknown): Record<string, unknown> {
   } catch {
     return {};
   }
+}
+
+function stripJsonFence(value: string): string {
+  return value
+    .replace(/^\s*```(?:json)?\s*/i, '')
+    .replace(/\s*```\s*$/i, '')
+    .trim();
+}
+
+function extractJsonObjectText(value: string): string {
+  const stripped = stripJsonFence(value);
+
+  try {
+    JSON.parse(stripped);
+    return stripped;
+  } catch {
+    // Local models often wrap JSON in prose. Extract the first balanced JSON object.
+  }
+
+  const start = stripped.indexOf('{');
+
+  if (start < 0) {
+    return stripped;
+  }
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = start; index < stripped.length; index += 1) {
+    const char = stripped[index];
+
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+
+    if (char === '\\') {
+      escaped = true;
+      continue;
+    }
+
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+
+    if (inString) {
+      continue;
+    }
+
+    if (char === '{') {
+      depth += 1;
+    } else if (char === '}') {
+      depth -= 1;
+
+      if (depth === 0) {
+        return stripped.slice(start, index + 1);
+      }
+    }
+  }
+
+  return stripped.slice(start);
+}
+
+function parseAiJsonObject(value: string): Record<string, unknown> {
+  return JSON.parse(extractJsonObjectText(value)) as Record<string, unknown>;
 }
 
 function compactErrorText(value: unknown): string {
@@ -1291,6 +1401,762 @@ function previewGeneratedCases(generatedCode = '', userRequest = ''): TestCaseDe
   return cases;
 }
 
+const testcaseFileColumns: Array<keyof TestcaseFileRow> = [
+  'caseId',
+  'module',
+  'feature',
+  'title',
+  'objective',
+  'preconditions',
+  'testData',
+  'steps',
+  'expectedResult',
+  'priority',
+  'severity',
+  'testType',
+  'automationCandidate',
+  'automationKind',
+  'selector',
+  'expectedText',
+  'status',
+  'actualResult',
+  'notes',
+  'durationMs',
+];
+
+function csvEscape(value: unknown): string {
+  const text = String(value ?? '');
+
+  if (/[",\r\n]/.test(text)) {
+    return `"${text.replace(/"/g, '""')}"`;
+  }
+
+  return text;
+}
+
+function rowsToCsv(rows: TestcaseFileRow[]): string {
+  return [
+    testcaseFileColumns.join(','),
+    ...rows.map((row) => testcaseFileColumns.map((column) => csvEscape(row[column])).join(',')),
+  ].join('\n');
+}
+
+function parseCsvLine(line: string): string[] {
+  const values: string[] = [];
+  let current = '';
+  let quoted = false;
+
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    const next = line[index + 1];
+
+    if (quoted && char === '"' && next === '"') {
+      current += '"';
+      index += 1;
+      continue;
+    }
+
+    if (char === '"') {
+      quoted = !quoted;
+      continue;
+    }
+
+    if (!quoted && char === ',') {
+      values.push(current);
+      current = '';
+      continue;
+    }
+
+    current += char;
+  }
+
+  values.push(current);
+  return values;
+}
+
+function parseCsv(text: string): string[][] {
+  const rows: string[][] = [];
+  let current = '';
+  let quoted = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    const next = text[index + 1];
+
+    if (quoted && char === '"' && next === '"') {
+      current += '""';
+      index += 1;
+      continue;
+    }
+
+    if (char === '"') {
+      quoted = !quoted;
+      current += char;
+      continue;
+    }
+
+    if (!quoted && char === '\n') {
+      rows.push(parseCsvLine(current.replace(/\r$/, '')));
+      current = '';
+      continue;
+    }
+
+    current += char;
+  }
+
+  if (current.trim()) {
+    rows.push(parseCsvLine(current.replace(/\r$/, '')));
+  }
+
+  return rows;
+}
+
+function inferAutomationKind(testCase: TestCaseDetail): string {
+  const text = `${testCase.title} ${testCase.description || ''} ${testCase.objective || ''} ${testCase.expected || ''}`.toLowerCase();
+
+  if (text.includes('meta description')) return 'meta_description_exists';
+  if (text.includes('canonical')) return 'canonical_exists';
+  if (text.includes('h1') || text.includes('heading')) return 'h1_exists';
+  if (text.includes('viewport')) return 'viewport_exists';
+  if (text.includes('html lang') || text.includes('language')) return 'html_lang_exists';
+  if (text.includes('title')) return 'title_exists';
+  if (text.includes('image')) return 'image_resources_ok';
+  if (text.includes('console')) return 'no_console_errors';
+  if (text.includes('page error')) return 'no_page_errors';
+  if (text.includes('link') || text.includes('navigation')) return 'link_health_basic';
+  if (text.includes('form') || text.includes('input') || text.includes('validation')) return 'form_validation';
+  if (text.includes('respond') || text.includes('load')) return 'page_load';
+  return 'generic_visible_content';
+}
+
+function testcaseRowsFromCases(cases: TestCaseDetail[]): TestcaseFileRow[] {
+  return cases.map((testCase, index) => ({
+    caseId: testCase.caseId || caseCodeFromTitle(testCase.title) || generatedCaseCode(index),
+    module: testCase.module || 'General',
+    feature: testCase.feature || 'Page behavior',
+    title: testCase.title.replace(caseCodeFromTitle(testCase.title), '').trim() || testCase.title,
+    objective: testCase.objective || testCase.description || '',
+    preconditions: testCase.preconditions || 'Target URL is reachable and required account/session is available when applicable.',
+    testData: testCase.testData || '',
+    steps: Array.isArray(testCase.steps) && testCase.steps.length
+      ? testCase.steps.map((step, stepIndex) => `${stepIndex + 1}. ${step.title}: ${step.detail}`).join('\n')
+      : '',
+    expectedResult: testCase.expected || 'The expected behavior should be visible and correct.',
+    priority: 'medium',
+    severity: 'major',
+    testType: testCase.testType || 'functional',
+    automationCandidate: testCase.automationCandidate || 'partial',
+    automationKind: inferAutomationKind(testCase),
+    selector: testCase.selector || '',
+    expectedText: '',
+    status: '',
+    actualResult: '',
+    notes: testCase.notes || '',
+    durationMs: '',
+  }));
+}
+
+function csvField(row: Record<string, string>, ...names: string[]): string {
+  for (const name of names) {
+    const value = row[name]?.trim();
+
+    if (value) {
+      return value;
+    }
+  }
+
+  return '';
+}
+
+function testcaseRowsFromCsv(csvContent: string): TestcaseFileRow[] {
+  const parsed = parseCsv(csvContent.trim());
+
+  if (parsed.length < 2) {
+    throw new Error('CSV must include a header row and at least one testcase row.');
+  }
+
+  const headers = parsed[0].map((header) => header.trim());
+  const missingColumns = ['title'].filter((column) => !headers.includes(column));
+  const hasCaseId = headers.includes('caseId') || headers.includes('caseCode');
+
+  if (missingColumns.length || !hasCaseId) {
+    throw new Error(`CSV is missing required columns: ${[...missingColumns, !hasCaseId ? 'caseId' : ''].filter(Boolean).join(', ')}`);
+  }
+
+  const rows = parsed.slice(1)
+    .map((values, index) => {
+      const row: Record<string, string> = {};
+      headers.forEach((header, valueIndex) => {
+        row[header] = values[valueIndex] || '';
+      });
+
+      return {
+        caseId: csvField(row, 'caseId', 'caseCode') || generatedCaseCode(index),
+        module: csvField(row, 'module') || 'General',
+        feature: csvField(row, 'feature') || 'Page behavior',
+        title: row.title?.trim() || `Imported testcase ${index + 1}`,
+        objective: csvField(row, 'objective', 'description') || '',
+        preconditions: csvField(row, 'preconditions') || '',
+        testData: csvField(row, 'testData') || '',
+        steps: row.steps?.trim() || '',
+        expectedResult: csvField(row, 'expectedResult', 'expected') || 'The check should pass.',
+        priority: row.priority?.trim() || 'medium',
+        severity: row.severity?.trim() || 'major',
+        testType: row.testType?.trim() || 'functional',
+        automationCandidate: row.automationCandidate?.trim() || (row.automationKind?.trim() ? 'partial' : 'no'),
+        automationKind: row.automationKind?.trim() || 'manual',
+        selector: row.selector?.trim() || '',
+        expectedText: row.expectedText?.trim() || '',
+        status: row.status?.trim() || '',
+        actualResult: csvField(row, 'actualResult', 'actual') || '',
+        notes: row.notes?.trim() || '',
+        durationMs: row.durationMs?.trim() || '',
+      };
+    })
+    .filter((row) => row.title || row.caseId);
+
+  if (!rows.length) {
+    throw new Error('CSV does not contain any testcase rows.');
+  }
+
+  return rows;
+}
+
+function testcaseFileDir(): string {
+  const dir = path.join(storageDir, 'testcase-files');
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function testcaseFilePath(fileName: string): string {
+  return path.join(testcaseFileDir(), path.basename(fileName));
+}
+
+function writeTestcaseCsvFile(rows: TestcaseFileRow[], prefix = 'testcases'): { fileName: string; filePath: string; csvContent: string } {
+  const fileName = `${prefix}-${Date.now()}.csv`;
+  const filePath = testcaseFilePath(fileName);
+  const csvContent = rowsToCsv(rows);
+  fs.writeFileSync(filePath, csvContent, 'utf-8');
+  return { fileName, filePath, csvContent };
+}
+
+async function writeRunResultCsv(runId: string): Promise<{ fileName: string; filePath: string }> {
+  const results = await prisma.testResult.findMany({
+    where: { runId },
+    orderBy: { caseCode: 'asc' },
+  });
+  const rows: TestcaseFileRow[] = results.map((result) => ({
+    caseId: result.caseCode,
+    module: '',
+    feature: '',
+    title: result.caseName,
+    objective: result.aiDiagnosis || '',
+    preconditions: '',
+    testData: '',
+    steps: '',
+    expectedResult: result.expectedResult || '',
+    priority: '',
+    severity: '',
+    testType: '',
+    automationCandidate: '',
+    automationKind: '',
+    selector: '',
+    expectedText: '',
+    status: result.status,
+    actualResult: result.errorMessage || result.aiDiagnosis || result.status,
+    notes: '',
+    durationMs: String(result.durationMs || 0),
+  }));
+  const file = writeTestcaseCsvFile(rows, `results-${runId}`);
+
+  await prisma.artifact.create({
+    data: {
+      id: newId('artifact'),
+      runId,
+      type: 'result-csv',
+      path: file.filePath,
+    },
+  });
+
+  return {
+    fileName: file.fileName,
+    filePath: file.filePath,
+  };
+}
+
+function testcaseText(value: unknown, fallback = ''): string {
+  return typeof value === 'string' && value.trim() ? value.trim() : fallback;
+}
+
+function testcaseListText(value: unknown): string {
+  if (Array.isArray(value)) {
+    return value
+      .map((item, index) => typeof item === 'string' ? `${index + 1}. ${item.trim()}` : '')
+      .filter(Boolean)
+      .join('\n');
+  }
+
+  return testcaseText(value);
+}
+
+function normalizePriority(value: unknown): string {
+  const text = testcaseText(value, 'medium').toLowerCase();
+  return ['high', 'medium', 'low'].includes(text) ? text : 'medium';
+}
+
+function normalizeSeverity(value: unknown): string {
+  const text = testcaseText(value, 'major').toLowerCase();
+  return ['critical', 'major', 'minor', 'trivial'].includes(text) ? text : 'major';
+}
+
+function normalizeAutomationCandidate(value: unknown, automationKind = ''): string {
+  const text = testcaseText(value, automationKind && automationKind !== 'manual' ? 'partial' : 'no').toLowerCase();
+  return ['yes', 'no', 'partial'].includes(text) ? text : 'partial';
+}
+
+function normalizeTestType(value: unknown): string {
+  const text = testcaseText(value, 'functional').toLowerCase();
+  const supported = [
+    'functional',
+    'ui',
+    'ux',
+    'validation',
+    'negative',
+    'edge',
+    'navigation',
+    'data',
+    'accessibility',
+    'seo',
+    'performance',
+    'security',
+    'compatibility',
+    'smoke',
+    'regression',
+  ];
+  return supported.includes(text) ? text : text.replace(/[^a-z0-9_-]/g, '-') || 'functional';
+}
+
+function normalizeAutomationKind(value: unknown): string {
+  const text = testcaseText(value, 'manual').toLowerCase();
+  const supported = [
+    'manual',
+    'page_load',
+    'title_exists',
+    'selector_visible',
+    'body_text_contains',
+    'meta_description_exists',
+    'canonical_exists',
+    'h1_exists',
+    'html_lang_exists',
+    'viewport_exists',
+    'link_health_basic',
+    'image_resources_ok',
+    'no_console_errors',
+    'no_page_errors',
+    'form_validation',
+    'generic_visible_content',
+  ];
+  return supported.includes(text) ? text : 'manual';
+}
+
+function rowToPreviewCase(row: TestcaseFileRow): TestCaseDetail {
+  return {
+    caseId: row.caseId,
+    module: row.module,
+    feature: row.feature,
+    title: `${row.caseId} ${row.title}`.trim(),
+    status: row.status || 'pending',
+    durationMs: Number(row.durationMs || 0),
+    description: row.objective,
+    objective: row.objective,
+    preconditions: row.preconditions,
+    testData: row.testData,
+    priority: row.priority,
+    severity: row.severity,
+    testType: row.testType,
+    automationCandidate: row.automationCandidate,
+    selector: row.selector,
+    expected: row.expectedResult,
+    actual: row.actualResult || 'Not run yet.',
+    notes: row.notes,
+    steps: row.steps
+      ? row.steps.split(/\n+/).map((step, index) => ({
+          title: `Step ${index + 1}`,
+          detail: step.replace(/^\d+\.\s*/, ''),
+          status: row.status || 'pending',
+        }))
+      : [],
+  };
+}
+
+function fallbackProfessionalRows(userRequest: string, targetUrl: string, count = 24): TestcaseFileRow[] {
+  const modules = [
+    ['Availability', 'Target access', 'smoke', 'page_load'],
+    ['Content', 'Visible content', 'functional', 'generic_visible_content'],
+    ['Navigation', 'Links and routing', 'navigation', 'link_health_basic'],
+    ['UI', 'Layout and readability', 'ui', 'generic_visible_content'],
+    ['Validation', 'Inputs and forms', 'validation', 'form_validation'],
+    ['Data', 'Displayed information', 'data', 'body_text_contains'],
+    ['State', 'Empty, loading, and error states', 'edge', 'manual'],
+    ['Accessibility', 'Basic accessibility signals', 'accessibility', 'generic_visible_content'],
+    ['SEO', 'Metadata and headings', 'seo', 'title_exists'],
+    ['Resources', 'Images and assets', 'performance', 'image_resources_ok'],
+    ['Runtime', 'Console and page errors', 'regression', 'no_console_errors'],
+    ['Security', 'Safe rendered output', 'security', 'manual'],
+  ];
+  const safeRequest = userRequest.trim() || 'the target page and its main user-facing behavior';
+
+  return Array.from({ length: count }, (_, index) => {
+    const [module, feature, testType, automationKind] = modules[index % modules.length];
+    const caseNumber = index + 1;
+    const priority = index < 6 ? 'high' : index < 18 ? 'medium' : 'low';
+    const severity = index < 4 ? 'critical' : index < 16 ? 'major' : 'minor';
+    const manual = automationKind === 'manual';
+
+    return {
+      caseId: `TC-${String(caseNumber).padStart(3, '0')}`,
+      module,
+      feature,
+      title: `${feature} covers ${safeRequest}`.slice(0, 120),
+      objective: `Verify ${feature.toLowerCase()} for ${safeRequest}.`,
+      preconditions: `Target URL is available: ${targetUrl}`,
+      testData: userRequest.trim() ? userRequest.trim() : 'Default target content',
+      steps: [
+        'Open the configured target URL.',
+        `Review the ${feature.toLowerCase()} behavior.`,
+        'Compare the observed behavior with the expected result.',
+        'Record pass/fail with actual evidence.',
+      ].map((step, stepIndex) => `${stepIndex + 1}. ${step}`).join('\n'),
+      expectedResult: `${feature} should work correctly, expose clear information, and avoid user-facing errors.`,
+      priority,
+      severity,
+      testType,
+      automationCandidate: manual ? 'no' : 'partial',
+      automationKind,
+      selector: '',
+      expectedText: '',
+      status: '',
+      actualResult: '',
+      notes: manual ? 'Manual review recommended because this case requires product judgment.' : '',
+      durationMs: '',
+    };
+  });
+}
+
+function buildProfessionalTestcasePrompt(url: string, userRequest: string, suite?: TestSuite, target?: TestTarget): string {
+  return `
+Return only JSON. No markdown outside JSON.
+
+You are a Senior QA/QC Engineer with many years of experience designing test processes and writing production-grade testcase files.
+
+Product:
+Passmark TestOps is shifting to a testcase-file-first workflow. The most important output is a high-quality CSV/XLSX-ready testcase file that QA or an owner can download, review, edit, import again, and optionally run with automation later.
+
+Target URL:
+${url}
+
+Suite context:
+${suite ? `Name: ${suite.name}\nType: ${suite.type}\nDescription: ${suite.description}\nConfig: ${JSON.stringify(suite.config || {})}` : 'No suite selected.'}
+
+Target context:
+${target ? `Name: ${target.name}\nType: ${target.type}\nURL: ${target.url}` : 'No target selected.'}
+
+User request:
+${userRequest.trim() || 'Create a professional testcase file for this target.'}
+
+Required QA thinking:
+1. Identify what system or page is being tested.
+2. Identify modules/features that should be covered.
+3. Identify risk areas.
+4. Decide which test types are needed: functional, UI/UX, validation, navigation, data display, forms, error/empty/loading states, permissions/auth if applicable, SEO, accessibility, performance, security, compatibility, edge and negative cases.
+5. Estimate a credible testcase count. Do not default to 6, 8, or 14. Broad requests should usually produce 24-60 cases.
+6. Generate focused, reviewable testcase rows. Each row must have one clear objective and expected result.
+
+Return this exact JSON shape:
+{
+  "coverageStrategy": {
+    "recommendedCaseCount": 32,
+    "rationale": "Why this amount is enough for the request.",
+    "coverageGroups": ["Functional", "Navigation", "Validation"],
+    "automationScope": "Which parts can be automated and which should stay manual.",
+    "assumptions": ["Assumption caused by missing information"]
+  },
+  "testcases": [
+    {
+      "caseId": "TC-001",
+      "module": "Module or page area",
+      "feature": "Specific feature",
+      "title": "Short testcase title",
+      "objective": "What this testcase proves",
+      "preconditions": "Required setup before execution",
+      "testData": "Data/accounts/content needed",
+      "steps": ["Step 1", "Step 2", "Step 3"],
+      "expectedResult": "Clear expected result",
+      "priority": "high",
+      "severity": "major",
+      "testType": "functional",
+      "automationCandidate": "yes",
+      "automationKind": "page_load",
+      "selector": "",
+      "expectedText": "",
+      "notes": ""
+    }
+  ]
+}
+
+Allowed priority values: high, medium, low.
+Allowed severity values: critical, major, minor, trivial.
+Allowed automationCandidate values: yes, no, partial.
+Allowed automationKind values: manual, page_load, title_exists, selector_visible, body_text_contains, meta_description_exists, canonical_exists, h1_exists, html_lang_exists, viewport_exists, link_health_basic, image_resources_ok, no_console_errors, no_page_errors, form_validation, generic_visible_content.
+
+Rules:
+- The testcases array should contain the recommended number of rows unless the request is extremely narrow.
+- Prefer practical QC depth over generic checks.
+- Include positive, negative, edge, UI/content, data, navigation, error state, and manual review cases when relevant.
+- Mark cases as manual/no when they require human judgment or unsupported automation.
+- Do not invent credentials or destructive actions.
+- Do not include load tests, DDoS, stress traffic, or high-concurrency tests.
+- Keep each testcase independently executable and understandable in Excel.
+`;
+}
+
+function normalizeProfessionalRows(parsed: Record<string, unknown>, fallbackRows: TestcaseFileRow[]): TestcaseFileRow[] {
+  const rawCases = Array.isArray(parsed.testcases) ? parsed.testcases : [];
+  const rows = rawCases.map((item, index) => {
+    const row = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+    const automationKind = normalizeAutomationKind(row.automationKind);
+
+    return {
+      caseId: testcaseText(row.caseId, `TC-${String(index + 1).padStart(3, '0')}`),
+      module: testcaseText(row.module, 'General'),
+      feature: testcaseText(row.feature, 'Page behavior'),
+      title: testcaseText(row.title, `Generated testcase ${index + 1}`),
+      objective: testcaseText(row.objective, testcaseText(row.description, 'Verify the expected behavior.')),
+      preconditions: testcaseText(row.preconditions, 'Target URL is reachable.'),
+      testData: testcaseText(row.testData),
+      steps: testcaseListText(row.steps) || '1. Open the target URL.\n2. Execute the described check.\n3. Record the result.',
+      expectedResult: testcaseText(row.expectedResult, testcaseText(row.expected, 'The expected behavior should be correct.')),
+      priority: normalizePriority(row.priority),
+      severity: normalizeSeverity(row.severity),
+      testType: normalizeTestType(row.testType),
+      automationCandidate: normalizeAutomationCandidate(row.automationCandidate, automationKind),
+      automationKind,
+      selector: testcaseText(row.selector),
+      expectedText: testcaseText(row.expectedText),
+      status: '',
+      actualResult: '',
+      notes: testcaseText(row.notes),
+      durationMs: '',
+    };
+  }).filter((row) => row.title && row.caseId);
+
+  return rows.length >= 8 ? rows : fallbackRows;
+}
+
+function buildCoverageExplanation(parsed: Record<string, unknown>, rows: TestcaseFileRow[], fallbackReason = ''): string {
+  const strategy = parsed.coverageStrategy && typeof parsed.coverageStrategy === 'object'
+    ? parsed.coverageStrategy as Record<string, unknown>
+    : {};
+  const groups = Array.isArray(strategy.coverageGroups)
+    ? strategy.coverageGroups.map((group) => testcaseText(group)).filter(Boolean)
+    : Array.from(new Set(rows.map((row) => row.module))).filter(Boolean);
+  const assumptions = Array.isArray(strategy.assumptions)
+    ? strategy.assumptions.map((assumption) => testcaseText(assumption)).filter(Boolean)
+    : [];
+
+  return [
+    `Recommended coverage: ${rows.length} test cases.`,
+    testcaseText(strategy.rationale, fallbackReason || 'The suite is split into focused QA cases so each result maps to one risk or behavior.'),
+    groups.length ? `Coverage groups: ${groups.join(', ')}.` : '',
+    testcaseText(strategy.automationScope, 'Automation is marked per row; manual cases remain editable and importable.'),
+    assumptions.length ? `Assumptions: ${assumptions.join('; ')}.` : '',
+  ].filter(Boolean).join('\n');
+}
+
+async function generateProfessionalTestcaseFile(
+  url: string,
+  userRequest: string,
+  suite?: TestSuite,
+  target?: TestTarget
+): Promise<{
+  rows: TestcaseFileRow[];
+  aiExplanation: string;
+  aiPrompt: string;
+  aiResponse: string;
+  aiStatus: 'passed' | 'fallback';
+  durationMs: number;
+}> {
+  const startedAt = Date.now();
+  const aiPrompt = buildProfessionalTestcasePrompt(url, userRequest, suite, target);
+  const fallbackRows = fallbackProfessionalRows(userRequest, url, 24);
+
+  try {
+    const aiResponse = await askLocalAI([
+      {
+        role: 'system',
+        content: 'You are a senior QA/QC lead. Your job is to create an Excel-ready testcase file with credible coverage before any automation is considered.',
+      },
+      {
+        role: 'user',
+        content: aiPrompt,
+      },
+    ]);
+    const parsed = parseAiJsonObject(aiResponse);
+    const rows = normalizeProfessionalRows(parsed, fallbackRows);
+
+    return {
+      rows,
+      aiExplanation: buildCoverageExplanation(parsed, rows),
+      aiPrompt,
+      aiResponse,
+      aiStatus: 'passed',
+      durationMs: Date.now() - startedAt,
+    };
+  } catch (error) {
+    const aiResponse = error instanceof Error ? error.message : String(error);
+
+    return {
+      rows: fallbackRows,
+      aiExplanation: buildCoverageExplanation(
+        {},
+        fallbackRows,
+        `AI testcase JSON could not be parsed, so Passmark generated a safe QC fallback file. Reason: ${aiResponse}`
+      ),
+      aiPrompt,
+      aiResponse,
+      aiStatus: 'fallback',
+      durationMs: Date.now() - startedAt,
+    };
+  }
+}
+
+function renderImportedCaseBody(row: TestcaseFileRow): string {
+  const selector = JSON.stringify(row.selector || 'body');
+  const expectedText = JSON.stringify(row.expectedText || '');
+
+  switch (row.automationKind) {
+    case 'page_load':
+      return `    const response = await openTarget(page);
+    expect(response, 'Expected the target to return a response').not.toBeNull();
+    expect(response?.status(), 'Expected no server error').toBeLessThan(500);
+    await expect(page.locator('body')).toBeVisible();`;
+    case 'title_exists':
+      return `    await openTarget(page);
+    await expect.poll(async () => (await page.title()).trim().length, { timeout: 10000 }).toBeGreaterThan(0);`;
+    case 'selector_visible':
+      return `    await openTarget(page);
+    await expect(page.locator(${selector}).first()).toBeVisible({ timeout: 10000 });`;
+    case 'body_text_contains':
+      return `    await openTarget(page);
+    const bodyText = await page.locator('body').innerText({ timeout: 10000 });
+    const expectedText = ${expectedText};
+    expect(bodyText.trim().length).toBeGreaterThan(0);
+    if (expectedText) {
+      expect(bodyText.toLowerCase()).toContain(expectedText.toLowerCase());
+    }`;
+    case 'meta_description_exists':
+      return `    await openTarget(page);
+    const metaDescription = page.locator('meta[name="description"]');
+    await expect(metaDescription).toHaveCount(1);
+    const content = await metaDescription.getAttribute('content');
+    expect(content?.trim().length || 0).toBeGreaterThan(0);`;
+    case 'canonical_exists':
+      return `    await openTarget(page);
+    const canonical = page.locator('link[rel="canonical"]');
+    await expect(canonical).toHaveCount(1);
+    const href = await canonical.getAttribute('href');
+    expect(href?.trim().length || 0).toBeGreaterThan(0);`;
+    case 'h1_exists':
+      return `    await openTarget(page);
+    const h1 = page.locator('h1');
+    await expect(h1.first()).toBeVisible({ timeout: 10000 });`;
+    case 'html_lang_exists':
+      return `    await openTarget(page);
+    const lang = await page.locator('html').getAttribute('lang');
+    expect(lang?.trim().length || 0).toBeGreaterThan(0);`;
+    case 'viewport_exists':
+      return `    await openTarget(page);
+    await expect(page.locator('meta[name="viewport"]')).toHaveCount(1);`;
+    case 'link_health_basic':
+      return `    await openTarget(page);
+    const linkCount = await page.locator('a[href]').count();
+    const contentBlockCount = await page.locator('main, [role="main"], article, section').count();
+    expect(linkCount + contentBlockCount).toBeGreaterThan(0);`;
+    case 'image_resources_ok':
+      return `    const failedImages: string[] = [];
+    page.on('response', (response) => {
+      const contentType = response.headers()['content-type'] || '';
+      if (contentType.includes('image') && response.status() >= 400) {
+        failedImages.push(response.url());
+      }
+    });
+    await openTarget(page);
+    expect(failedImages).toEqual([]);`;
+    case 'no_console_errors':
+      return `    const consoleErrors: string[] = [];
+    page.on('console', (message) => {
+      if (message.type() === 'error') consoleErrors.push(message.text());
+    });
+    await openTarget(page);
+    expect(consoleErrors.slice(0, 3)).toEqual([]);`;
+    case 'no_page_errors':
+      return `    const pageErrors: string[] = [];
+    page.on('pageerror', (error) => pageErrors.push(error.message));
+    await openTarget(page);
+    expect(pageErrors.slice(0, 3)).toEqual([]);`;
+    case 'form_validation':
+      return `    await openTarget(page);
+    const formControls = page.locator('input:not([type="hidden"]), select, textarea, button[type="submit"]');
+    expect(await formControls.count(), 'Expected form controls to be inspectable when form validation is requested').toBeGreaterThanOrEqual(0);`;
+    default:
+      return `    await openTarget(page);
+    const bodyText = await page.locator('body').innerText({ timeout: 10000 });
+    expect(bodyText.trim().length).toBeGreaterThan(0);`;
+  }
+}
+
+function renderImportedCsvSpec(url: string, rows: TestcaseFileRow[], auth?: AuthInput): GeneratedSpecResult {
+  const testBlocks = rows.map((row, index) => {
+    const caseCode = row.caseId || generatedCaseCode(index);
+    const title = JSON.stringify(`${caseCode} ${row.title}`.replace(/\s+/g, ' ').trim());
+    const candidate = (row.automationCandidate || '').toLowerCase();
+
+    if (candidate === 'no' || row.automationKind === 'manual') {
+      return `  test.skip(${title}, async () => {
+    // Manual testcase from imported file. Keep it in the run report without executing unsafe arbitrary steps.
+  });`;
+    }
+
+    return `  test(${title}, async ({ page }) => {
+${renderImportedCaseBody(row)}
+  });`;
+  }).join('\n\n');
+  const code = `import { test, expect } from '@playwright/test';
+
+const SITE_URL = ${JSON.stringify(url)};
+
+async function openTarget(page) {
+  const response = await page.goto(SITE_URL, {
+    waitUntil: 'domcontentloaded',
+    timeout: 30000,
+  });
+  await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => undefined);
+  return response;
+}
+
+test.describe('Imported testcase file', () => {
+${testBlocks}
+});
+`;
+  const outputPath = path.resolve(rootDir, 'tests', `imported-testcases-${Date.now()}.spec.ts`);
+  fs.writeFileSync(outputPath, code, 'utf-8');
+  return {
+    outputPath,
+    code,
+    aiExplanation: `Imported ${rows.length} testcase rows from CSV. Automation used whitelist kinds only.`,
+  };
+}
+
 function caseCodeFromTitle(title: string): string {
   return title.match(/\b[A-Z]+-\d+\b/)?.[0] || '';
 }
@@ -1730,6 +2596,7 @@ async function runPlaywrightProgressively(
   const finalStatus: TestRunStatus = hasFailed ? 'failed' : 'passed';
 
   await updateRunSummaryFromResults(job.runId, finalStatus, Date.now() - startedAt);
+  await writeRunResultCsv(job.runId);
   await prisma.testRun.update({
     where: { id: job.runId },
     data: {
@@ -1850,7 +2717,9 @@ async function executeRunQueueJob(job: RunQueueJob) {
     const suite = job.context.suiteId
       ? ((await prisma.testSuite.findUnique({ where: { id: job.context.suiteId } })) as unknown as TestSuite | undefined)
       : undefined;
-    const result = await generateSpecForRun(job.url, job.userRequest, job.auth, suite);
+    const result = job.importedCases?.length
+      ? renderImportedCsvSpec(job.url, job.importedCases, job.auth)
+      : await generateSpecForRun(job.url, job.userRequest, job.auth, suite);
     await runPlaywrightProgressively(job, result, result.outputPath);
   } catch (error) {
     await failRun(job.runId, error);
@@ -2154,6 +3023,24 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
+    if (request.method === 'GET' && requestUrl.pathname.startsWith('/api/testcase-files/download/')) {
+      const fileName = decodeURIComponent(requestUrl.pathname.replace('/api/testcase-files/download/', ''));
+      const filePath = testcaseFilePath(fileName);
+
+      if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+        sendError(response, 404, 'Testcase file not found');
+        return;
+      }
+
+      response.writeHead(200, {
+        'Content-Type': 'text/csv; charset=utf-8',
+        'Content-Disposition': `attachment; filename="${path.basename(fileName)}"`,
+        'Cache-Control': 'no-store',
+      });
+      fs.createReadStream(filePath).pipe(response);
+      return;
+    }
+
     if (request.method === 'GET' && requestUrl.pathname === '/api/runs') {
       const runs = await prisma.testRun.findMany({
         take: 50,
@@ -2163,6 +3050,7 @@ const server = http.createServer(async (request, response) => {
           suite: true,
           target: true,
           results: { orderBy: { caseCode: 'asc' } },
+          artifacts: true,
         },
       });
       sendJson(response, 200, runs.map((run) => toRunSummary(dbRunToApiRun(run))));
@@ -2188,6 +3076,98 @@ const server = http.createServer(async (request, response) => {
       }
 
       sendJson(response, 200, dbRunToApiRun(run));
+      return;
+    }
+
+    if (request.method === 'POST' && requestUrl.pathname === '/api/testcase-files/generate') {
+      const body = await readBody(request);
+      const { project, suite, target } = await resolveProjectSuiteTargetContext(body.projectId, body.suiteId, body.targetId);
+      const url = resolveRunUrl(body.url, project, target);
+      const userRequest = buildSuiteUserRequest(typeof body.userRequest === 'string' ? body.userRequest : '', suite);
+      const result = await generateProfessionalTestcaseFile(url, userRequest, suite, target);
+      const rows = result.rows;
+      const file = writeTestcaseCsvFile(rows, 'ai-testcases');
+
+      await prisma.aIRequestLog.create({
+        data: {
+          id: newId('ai-log'),
+          provider: 'local-ai',
+          model: getConfiguredLocalAIModel(),
+          prompt: result.aiPrompt,
+          response: result.aiResponse,
+          status: result.aiStatus,
+          durationMs: result.durationMs,
+        },
+      });
+
+      sendJson(response, 200, {
+        url,
+        projectId: project?.id,
+        projectName: project?.name,
+        suiteId: suite?.id,
+        suiteName: suite?.name,
+        targetId: target?.id,
+        targetName: target?.name,
+        fileName: file.fileName,
+        downloadUrl: `/api/testcase-files/download/${encodeURIComponent(file.fileName)}`,
+        csvContent: file.csvContent,
+        aiExplanation: result.aiExplanation,
+        rows,
+        cases: rows.map(rowToPreviewCase),
+      });
+      return;
+    }
+
+    if (request.method === 'POST' && requestUrl.pathname === '/api/testcase-files/import') {
+      const body = await readBody(request);
+      const csvContent = typeof body.csvContent === 'string' ? body.csvContent : '';
+      const rows = testcaseRowsFromCsv(csvContent);
+      const file = writeTestcaseCsvFile(rows, 'imported-testcases');
+
+      sendJson(response, 200, {
+        fileName: file.fileName,
+        downloadUrl: `/api/testcase-files/download/${encodeURIComponent(file.fileName)}`,
+        csvContent: file.csvContent,
+        rows,
+        cases: rows.map(rowToPreviewCase),
+      });
+      return;
+    }
+
+    if (request.method === 'POST' && requestUrl.pathname === '/api/testcase-files/run') {
+      const body = await readBody(request);
+      const { project, suite, target } = await resolveProjectSuiteTargetContext(body.projectId, body.suiteId, body.targetId);
+      const url = resolveRunUrl(body.url, project, target);
+      const csvContent = typeof body.csvContent === 'string' ? body.csvContent : '';
+      const importedCases = testcaseRowsFromCsv(csvContent);
+      const auth = normalizeAuth(body.auth);
+      const fileName = typeof body.fileName === 'string' ? body.fileName : 'imported-testcases.csv';
+      const job: RunQueueJob = {
+        runId: newId('run'),
+        url,
+        userRequest: `Imported testcase file: ${fileName}`,
+        auth,
+        importedCases,
+        sourceFileName: fileName,
+        context: {
+          projectId: project?.id,
+          projectName: project?.name,
+          suiteId: suite?.id,
+          suiteName: suite?.name,
+          suiteType: suite?.type,
+          targetId: target?.id,
+          targetName: target?.name,
+          targetType: target?.type,
+        },
+      };
+      const run = await createQueuedRun(job);
+      runQueue.enqueue(job);
+
+      sendJson(response, 200, {
+        ...toRunSummary(run),
+        runId: run.id,
+        queue: runQueue.status(),
+      });
       return;
     }
 

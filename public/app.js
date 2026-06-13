@@ -1,6 +1,7 @@
 const form = document.querySelector('#testForm');
 const projectForm = document.querySelector('#projectForm');
 const projectList = document.querySelector('#projectList');
+const sidebarProjectList = document.querySelector('#sidebarProjectList');
 const projectSearch = document.querySelector('#projectSearch');
 const projectCount = document.querySelector('#projectCount');
 const projectSelect = document.querySelector('#projectSelect');
@@ -98,6 +99,17 @@ const pageInfo = document.querySelector('#pageInfo');
 const progressPanel = document.querySelector('#progressPanel');
 const progressBar = document.querySelector('#progressBar');
 const stepsList = document.querySelector('#stepsList');
+const generateCaseFileButton = document.querySelector('#generateCaseFileButton');
+const downloadCaseFileLink = document.querySelector('#downloadCaseFileLink');
+const caseFileInput = document.querySelector('#caseFileInput');
+const runImportedFileButton = document.querySelector('#runImportedFileButton');
+const testcaseFileMeta = document.querySelector('#testcaseFileMeta');
+const fileStateCard = document.querySelector('#fileStateCard');
+const fileStateTitle = document.querySelector('#fileStateTitle');
+const fileStateMeta = document.querySelector('#fileStateMeta');
+const viewCaseDetailButton = document.querySelector('#viewCaseDetailButton');
+const testcaseDetailSection = document.querySelector('#testcaseDetailSection');
+const runModeSwitch = document.querySelector('#runModeSwitch');
 const detailOverlay = document.querySelector('#detailOverlay');
 const closeDetailButton = document.querySelector('#closeDetailButton');
 const detailTitle = document.querySelector('#detailTitle');
@@ -154,6 +166,15 @@ const pageState = {
 };
 let runControlsLocked = false;
 const openPlanCardKeys = new Set();
+const testcaseFileState = {
+  csvContent: '',
+  fileName: '',
+  downloadUrl: '',
+  rows: [],
+};
+const runModeState = {
+  mode: 'file',
+};
 const runLockControls = [
   projectSelect,
   suiteSelect,
@@ -173,6 +194,9 @@ const runLockControls = [
   generateButton,
   refreshButton,
   toggleCodeButton,
+  generateCaseFileButton,
+  caseFileInput,
+  runImportedFileButton,
 ].filter(Boolean);
 const suiteTypeConfig = {
   'seo-basic': {
@@ -325,6 +349,14 @@ function showPage(page, options = {}) {
   for (const section of pageSections) {
     const pages = (section.dataset.pageSection || '').split(/\s+/);
     section.hidden = !pages.includes(nextPage);
+  }
+
+  if (nextPage === 'run' && testcaseDetailSection?.dataset.open !== 'true') {
+    testcaseDetailSection.hidden = true;
+  }
+
+  if (nextPage === 'run' && fileStateCard && !testcaseFileState.csvContent) {
+    fileStateCard.hidden = true;
   }
 
   for (const link of pageLinks) {
@@ -492,6 +524,23 @@ function statusText(status) {
   }
 
   return status || '';
+}
+
+function compactEnvironmentLabel(value = '') {
+  const normalized = String(value || '').trim().toLowerCase();
+  const labels = {
+    production: 'PROD',
+    prod: 'PROD',
+    staging: 'STG',
+    stage: 'STG',
+    development: 'DEV',
+    dev: 'DEV',
+    local: 'LOCAL',
+    testing: 'TEST',
+    test: 'TEST',
+  };
+
+  return labels[normalized] || normalized.slice(0, 8).toUpperCase() || 'ENV';
 }
 
 function isRunDone(run) {
@@ -930,6 +979,9 @@ function selectProject(projectIdValue) {
 
 function renderProjects() {
   projectList.innerHTML = '';
+  if (sidebarProjectList) {
+    sidebarProjectList.innerHTML = '';
+  }
   projectSelect.innerHTML = `<option value="">${escapeHtml(t('common.manualUrl', 'Manual URL'))}</option>`;
   projectCount.textContent = t('projects.count', '{count} {item}', {
     count: projectState.projects.length,
@@ -940,6 +992,9 @@ function renderProjects() {
 
   if (!projectState.projects.length) {
     projectList.innerHTML = `<p class="empty">${escapeHtml(t('projects.empty', 'No projects yet.'))}</p>`;
+    if (sidebarProjectList) {
+      sidebarProjectList.innerHTML = `<span>${escapeHtml(t('projects.empty', 'No projects yet.'))}</span>`;
+    }
     projectSelectedMeta.textContent = t('projects.noSelected', 'No project selected');
     return;
   }
@@ -975,6 +1030,23 @@ function renderProjects() {
     `;
     item.addEventListener('click', () => selectProject(project.id));
     projectList.appendChild(item);
+  }
+
+  if (sidebarProjectList) {
+    for (const project of projectState.projects.slice(0, 8)) {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = `sidebar-project-item${project.id === projectState.selectedId ? ' active' : ''}`;
+      item.innerHTML = `
+        <strong>${escapeHtml(project.name)}</strong>
+        <small class="sidebar-project-env">${escapeHtml(compactEnvironmentLabel(project.environment || project.baseUrl))}</small>
+      `;
+      item.addEventListener('click', () => {
+        selectProject(project.id);
+        showPage('run');
+      });
+      sidebarProjectList.appendChild(item);
+    }
   }
 
   if (projectState.selectedId && !getSelectedProject()) {
@@ -1568,10 +1640,21 @@ function renderCaseDetail(testCase) {
 
 function renderCaseFacts(testCase) {
   const facts = [
+    [t('fileFlow.caseId', 'Case ID'), testCase.caseId || (testCase.title || '').match(/\b[A-Z]+-\d+\b/)?.[0]],
+    [t('fileFlow.module', 'Module'), testCase.module],
+    [t('fileFlow.feature', 'Feature'), testCase.feature],
+    [t('fileFlow.priority', 'Priority'), testCase.priority],
+    [t('fileFlow.severity', 'Severity'), testCase.severity],
+    [t('fileFlow.testType', 'Type'), testCase.testType],
+    [t('fileFlow.automationCandidate', 'Automation'), testCase.automationCandidate],
     [t('flow.goal', 'Goal'), testCase.description],
+    [t('fileFlow.preconditions', 'Preconditions'), testCase.preconditions],
+    [t('fileFlow.testData', 'Test data'), testCase.testData],
     [t('detail.expected', 'Expected'), testCase.expected],
     [t('detail.actual', 'Actual result'), testCase.actual],
     [t('common.duration', 'Duration'), formatDuration(testCase.durationMs)],
+    [t('detail.selector', 'Selector'), testCase.selector],
+    [t('fileFlow.notes', 'Notes'), testCase.notes],
   ].filter(([, value]) => value);
 
   if (!facts.length) {
@@ -1609,11 +1692,21 @@ function openFactDetail(label, value, testCase = {}) {
     </div>
     <div class="fact-grid">
       ${[
+        [t('fileFlow.caseId', 'Case ID'), testCase.caseId || (testCase.title || '').match(/\b[A-Z]+-\d+\b/)?.[0]],
+        [t('fileFlow.module', 'Module'), testCase.module],
+        [t('fileFlow.feature', 'Feature'), testCase.feature],
+        [t('fileFlow.priority', 'Priority'), testCase.priority],
+        [t('fileFlow.severity', 'Severity'), testCase.severity],
+        [t('fileFlow.testType', 'Type'), testCase.testType],
+        [t('fileFlow.automationCandidate', 'Automation'), testCase.automationCandidate],
         [t('flow.goal', 'Goal'), testCase.description],
+        [t('fileFlow.preconditions', 'Preconditions'), testCase.preconditions],
+        [t('fileFlow.testData', 'Test data'), testCase.testData],
         [t('detail.expected', 'Expected'), testCase.expected],
         [t('detail.actual', 'Actual result'), testCase.actual],
         [t('common.duration', 'Duration'), formatDuration(testCase.durationMs)],
         [t('detail.selector', 'Selector'), testCase.selector],
+        [t('fileFlow.notes', 'Notes'), testCase.notes],
       ]
         .filter(([, factValue]) => factValue)
         .map(
@@ -1713,8 +1806,14 @@ function renderGeneratedPlan(cases = []) {
     item.innerHTML = `
       <span class="plan-main">
         <span>
-          <span class="case-node-index">${String(index + 1).padStart(2, '0')}</span>
+          <span class="case-node-index">${escapeHtml(testCase.caseId || String(index + 1).padStart(2, '0'))}</span>
           <strong>${escapeHtml(testCase.title || 'Untitled test')}</strong>
+          <span class="case-meta-line">
+            ${[testCase.module, testCase.feature, testCase.priority, testCase.testType]
+              .filter(Boolean)
+              .map((value) => `<em>${escapeHtml(value)}</em>`)
+              .join('')}
+          </span>
           <small>${escapeHtml(testCase.description || t('flow.generatedCase', 'Generated Playwright case'))}</small>
         </span>
         <span>
@@ -1792,6 +1891,224 @@ function renderAiExplanation(value = '') {
 
   aiExplanationPanel.hidden = !text;
   aiExplanationText.textContent = text;
+}
+
+function setRunMode(mode) {
+  runModeState.mode = mode === 'auto' ? 'auto' : 'file';
+  document.body.dataset.runMode = runModeState.mode;
+
+  if (runModeSwitch) {
+    for (const button of runModeSwitch.querySelectorAll('button[data-mode]')) {
+      button.classList.toggle('active', button.dataset.mode === runModeState.mode);
+    }
+  }
+
+  if (generateCaseFileButton) {
+    generateCaseFileButton.textContent = runModeState.mode === 'auto'
+      ? testcaseFileState.csvContent
+        ? t('fileFlow.runImported', 'Run imported')
+        : t('fileFlow.import', 'Import CSV')
+      : t('fileFlow.generate', 'Generate CSV');
+  }
+}
+
+function updateRunWelcomeState(isWorking = false) {
+  const hasFile = Boolean(testcaseFileState.csvContent);
+  document.body.classList.toggle('has-case-file', hasFile);
+  document.body.classList.toggle('is-working', Boolean(isWorking));
+}
+
+function toggleCaseDetail(force) {
+  if (!testcaseDetailSection) {
+    return;
+  }
+
+  const shouldShow = typeof force === 'boolean' ? force : testcaseDetailSection.hidden;
+  testcaseDetailSection.hidden = !shouldShow;
+  testcaseDetailSection.dataset.open = shouldShow ? 'true' : 'false';
+
+  if (viewCaseDetailButton) {
+    viewCaseDetailButton.textContent = shouldShow
+      ? t('fileFlow.hideDetail', 'Ẩn chi tiết')
+      : t('fileFlow.viewDetail', 'Xem chi tiết');
+  }
+}
+
+function setCaseFileState(result = {}) {
+  testcaseFileState.csvContent = result.csvContent || '';
+  testcaseFileState.fileName = result.fileName || '';
+  testcaseFileState.downloadUrl = result.downloadUrl || '';
+  testcaseFileState.rows = Array.isArray(result.rows) ? result.rows : [];
+  const count = testcaseFileState.rows.length;
+
+  if (testcaseFileMeta) {
+    testcaseFileMeta.textContent = testcaseFileState.fileName
+      ? t('fileFlow.loaded', '{file} - {count} rows ready', {
+          file: testcaseFileState.fileName,
+          count,
+        })
+      : t('fileFlow.empty', 'No testcase file loaded.');
+  }
+
+  if (fileStateCard) {
+    fileStateCard.hidden = !testcaseFileState.csvContent;
+  }
+
+  if (fileStateTitle) {
+    fileStateTitle.textContent = testcaseFileState.fileName || t('fileFlow.empty', 'No testcase file loaded.');
+  }
+
+  if (fileStateMeta) {
+    fileStateMeta.textContent = testcaseFileState.fileName
+      ? t('fileFlow.caseSummary', '{count} test cases ready', { count })
+      : t('fileFlow.empty', 'No testcase file loaded.');
+  }
+
+  if (downloadCaseFileLink) {
+    downloadCaseFileLink.href = testcaseFileState.downloadUrl || '#';
+    downloadCaseFileLink.classList.toggle('disabled', !testcaseFileState.downloadUrl);
+    downloadCaseFileLink.setAttribute('aria-disabled', String(!testcaseFileState.downloadUrl));
+    downloadCaseFileLink.download = testcaseFileState.fileName || '';
+  }
+
+  if (runImportedFileButton) {
+    runImportedFileButton.disabled = !testcaseFileState.csvContent;
+  }
+
+  setRunMode(runModeState.mode);
+  updateRunWelcomeState(false);
+}
+
+function readSelectedCaseFile() {
+  const file = caseFileInput.files?.[0];
+
+  if (!file) {
+    throw new Error(t('fileFlow.noFile', 'Choose a CSV file first.'));
+  }
+
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve({
+      fileName: file.name,
+      csvContent: String(reader.result || ''),
+    });
+    reader.onerror = () => reject(reader.error || new Error('Could not read file.'));
+    reader.readAsText(file);
+  });
+}
+
+async function generateCaseFile() {
+  setBusy(true, t('common.generating', 'Generating'));
+  setStatusDetail(t('fileFlow.generatingDetail', 'Generating an editable CSV testcase file.'));
+  updateRunWelcomeState(true);
+  toggleCaseDetail(false);
+  renderPlanLoading(
+    t('fileFlow.generatingTitle', 'Generating testcase file'),
+    t('fileFlow.generatingText', 'AI is preparing cases, then the backend converts them into a CSV you can edit in Excel.')
+  );
+  setProgress('generate', 30);
+
+  try {
+    const result = await requestJson('/api/testcase-files/generate', {
+      method: 'POST',
+      body: JSON.stringify({
+        url: siteUrl.value,
+        projectId: projectState.selectedId,
+        suiteId: suiteState.selectedId,
+        targetId: targetState.selectedId,
+        userRequest: aiRequest.value,
+        auth: collectAuth(),
+      }),
+    });
+
+    setCaseFileState(result);
+    renderAiExplanation(result.aiExplanation || '');
+    renderGeneratedPlan(result.cases || []);
+    toggleCaseDetail(false);
+    setStatus(t('common.generated', 'Generated'), 'passed');
+    setStatusDetail('');
+    setProgress('store', 100);
+  } catch (error) {
+    generatedCode.value = error.message;
+    renderGeneratedPlan([]);
+    setStatus(t('common.error', 'Error'), 'failed');
+  } finally {
+    updateRunWelcomeState(false);
+    setBusy(false, systemStatus.textContent);
+    setTimeout(resetProgress, 900);
+  }
+}
+
+async function importCaseFile() {
+  try {
+    const selectedFile = await readSelectedCaseFile();
+    const result = await requestJson('/api/testcase-files/import', {
+      method: 'POST',
+      body: JSON.stringify(selectedFile),
+    });
+    setCaseFileState(result);
+    renderGeneratedPlan(result.cases || []);
+    toggleCaseDetail(false);
+    setStatus(t('fileFlow.imported', 'CSV imported'), 'passed');
+  } catch (error) {
+    generatedCode.value = error.message;
+    setStatus(t('common.error', 'Error'), 'failed');
+  }
+}
+
+async function runImportedCaseFile() {
+  if (!testcaseFileState.csvContent) {
+    setStatus(t('fileFlow.noFile', 'Choose a CSV file first.'), 'failed');
+    return;
+  }
+
+  setBusy(true, t('common.queued', 'Queued'));
+  openPlanCardKeys.clear();
+  updateRunWelcomeState(true);
+  toggleCaseDetail(true);
+  renderPlanLoading(
+    t('fileFlow.runningTitle', 'Running imported testcase file'),
+    t('fileFlow.runningText', 'The backend is rendering safe Playwright checks from imported CSV rows.')
+  );
+  setProgress('generate', 15);
+
+  try {
+    const run = await requestJson('/api/testcase-files/run', {
+      method: 'POST',
+      body: JSON.stringify({
+        url: siteUrl.value,
+        projectId: projectState.selectedId,
+        suiteId: suiteState.selectedId,
+        targetId: targetState.selectedId,
+        csvContent: testcaseFileState.csvContent,
+        fileName: testcaseFileState.fileName,
+        auth: collectAuth(),
+      }),
+    });
+
+    updateLatest(run);
+    setStatus(t('queue.queued', 'Run queued'), 'queued');
+    setProgress('generate', 25);
+    await loadRuns();
+
+    const finalRun = await pollRunUntilDone(run.runId || run.id);
+
+    if (finalRun.generatedCode) {
+      generatedCode.value = finalRun.generatedCode;
+    }
+
+    renderAiExplanation(finalRun.aiExplanation || '');
+    renderGeneratedPlan(finalRun.cases || []);
+    setProgress('store', 100);
+  } catch (error) {
+    generatedCode.value = error.message;
+    renderGeneratedPlan([]);
+    setStatus(t('common.error', 'Error'), 'failed');
+  } finally {
+    updateRunWelcomeState(false);
+    setBusy(false, systemStatus.textContent);
+    setTimeout(resetProgress, 900);
+  }
 }
 
 function updateLatest(run) {
@@ -1908,7 +2225,7 @@ function renderHistory() {
   for (const run of pageRuns) {
     const item = document.createElement('button');
     item.type = 'button';
-    item.className = 'history-item';
+    item.className = `history-item ${run.status || 'pending'}`;
     item.dataset.runId = run.id;
     item.innerHTML = `
       <span class="run-status ${run.status}">${escapeHtml(statusText(run.status))}</span>
@@ -2086,6 +2403,7 @@ async function openRunDetail(runId) {
       ${run.suiteName ? `<span>${escapeHtml(run.suiteName)} (${escapeHtml(run.suiteType || 'suite')})</span>` : ''}
       ${run.targetName ? `<span>${escapeHtml(run.targetName)} (${escapeHtml(run.targetType || 'target')})</span>` : ''}
       <span>${new Date(run.createdAt).toLocaleString()}</span>
+      ${run.resultCsvUrl ? `<a class="secondary file-download" href="${escapeHtml(run.resultCsvUrl)}">${escapeHtml(t('fileFlow.downloadResult', 'Download result CSV'))}</a>` : ''}
     `;
     caseList.innerHTML = `
       ${run.aiExplanation ? `
@@ -2142,7 +2460,7 @@ async function openRunDetail(runId) {
 
 form.addEventListener('submit', (event) => {
   event.preventDefault();
-  runTest();
+  generateCaseFile();
 });
 
 projectForm.addEventListener('submit', saveProject);
@@ -2269,6 +2587,31 @@ for (const element of [projectSelectedMeta, suiteSelectedMeta, targetSelectedMet
   });
 }
 generateButton.addEventListener('click', generateOnly);
+generateCaseFileButton.addEventListener('click', () => {
+  if (runModeState.mode === 'auto') {
+    if (testcaseFileState.csvContent) {
+      runImportedCaseFile();
+      return;
+    }
+
+    caseFileInput.click();
+    return;
+  }
+
+  generateCaseFile();
+});
+caseFileInput.addEventListener('change', importCaseFile);
+runImportedFileButton.addEventListener('click', runImportedCaseFile);
+viewCaseDetailButton.addEventListener('click', () => toggleCaseDetail());
+runModeSwitch.addEventListener('click', (event) => {
+  const button = event.target.closest('button[data-mode]');
+
+  if (!button) {
+    return;
+  }
+
+  setRunMode(button.dataset.mode);
+});
 refreshButton.addEventListener('click', loadRuns);
 prevPageButton.addEventListener('click', () => {
   historyState.page = Math.max(1, historyState.page - 1);
@@ -2331,6 +2674,9 @@ async function initApp() {
   renderSuites();
   renderCases();
   setSuiteType('custom');
+  setRunMode('file');
+  toggleCaseDetail(false);
+  updateRunWelcomeState(false);
   await Promise.all([loadProjects(), loadRuns()]);
   updateSelectionSummary();
 }
