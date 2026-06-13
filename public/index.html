@@ -35,6 +35,14 @@
             <span>04</span>
             <strong data-i18n="nav.reports">Reports</strong>
           </a>
+        </nav>
+        <section class="sidebar-projects">
+          <p>Projects</p>
+          <div class="sidebar-project-list" id="sidebarProjectList">
+            <span>No projects yet</span>
+          </div>
+        </section>
+        <nav class="sidebar-nav sidebar-bottom-nav" aria-label="Workspace secondary">
           <a href="#settings" data-page-link="settings">
             <span>05</span>
             <strong data-i18n="nav.settings">Settings</strong>
@@ -348,7 +356,21 @@
           </div>
         </section>
 
-        <form class="control-panel" id="testForm" data-page-section="run">
+        <header class="chat-topbar" data-page-section="run">
+          <strong>Passmark TestOps</strong>
+          <span>...</span>
+        </header>
+
+        <section class="run-welcome" data-page-section="run">
+          <h1 data-i18n="run.welcomeTitle">What should we test?</h1>
+          <p data-i18n="run.welcomeText">Describe the product, page, or risk area. Passmark will create a QC-ready testcase file first.</p>
+        </section>
+
+        <form class="control-panel simple-composer" id="testForm" data-page-section="run">
+          <div class="mode-switch" id="runModeSwitch" role="tablist" aria-label="Run mode">
+            <button type="button" class="active" data-mode="file" data-i18n="mode.file">Tạo file testcase</button>
+            <button type="button" data-mode="auto" data-i18n="mode.auto">Auto test theo file</button>
+          </div>
           <section class="selection-picker">
             <button type="button" class="selection-toggle" id="selectionToggle" aria-expanded="false" aria-controls="selectionPopover">
               <span class="selection-toggle-icon" aria-hidden="true"></span>
@@ -437,44 +459,42 @@
             </div>
           </section>
 
-          <label for="siteUrl">
-            <span data-i18n="run.websiteUrl">Website URL</span>
-            <span class="help-tip" tabindex="0" data-i18n-title="help.siteUrl" title="The final URL used for this run. Selecting a target fills this automatically.">?</span>
-          </label>
-          <div class="url-row">
+          <div class="composer-url-row">
             <input
               id="siteUrl"
               name="siteUrl"
               type="url"
               value="https://example.com/"
               placeholder="https://example.com/"
+              aria-label="Website URL"
               required
             >
           </div>
-
-          <label class="prompt-label" for="aiRequest">
-            <span data-i18n="run.aiRequest">What do you want to test?</span>
-            <span class="help-tip" tabindex="0" data-i18n-title="help.aiRequest" title="Describe the risks or areas AI should cover. Leave blank for the suite defaults.">?</span>
-          </label>
-          <div class="prompt-row">
+          <div class="prompt-row composer-box">
             <textarea
               id="aiRequest"
               class="prompt-input"
               placeholder="Example: check title, image alt text, broken links..."
               data-i18n-placeholder="run.aiPlaceholder"
             ></textarea>
+            <div class="composer-actions">
+              <span id="testcaseFileMeta" data-i18n="fileFlow.empty">No testcase file loaded.</span>
+              <div class="composer-action-buttons">
+                <button type="button" id="generateCaseFileButton" data-i18n="fileFlow.generate">Generate CSV</button>
+                <details class="action-menu file-action-menu" id="actionMenu" hidden>
+                  <summary>
+                    <span data-i18n="run.more">More</span>
+                  </summary>
+                  <div class="action-menu-panel">
+                    <button type="button" class="secondary" id="refreshButton" data-i18n="run.refresh">Refresh history</button>
+                  </div>
+                </details>
+              </div>
+            </div>
           </div>
           <div class="button-row">
-            <button type="submit" id="runButton" data-i18n="run.runTest">Run test</button>
-            <details class="action-menu" id="actionMenu">
-              <summary>
-                <span data-i18n="run.more">More</span>
-              </summary>
-              <div class="action-menu-panel">
-                <button type="button" class="secondary" id="generateButton" data-i18n="run.generate">Generate only</button>
-                <button type="button" class="secondary" id="refreshButton" data-i18n="run.refresh">Refresh history</button>
-              </div>
-            </details>
+            <button type="submit" id="runButton" data-i18n="run.runTest" hidden>Run test</button>
+            <button type="button" class="secondary" id="generateButton" data-i18n="run.generate" hidden>Generate only</button>
           </div>
           <div class="progress-panel" id="progressPanel" hidden>
             <div class="progress-bar">
@@ -489,7 +509,24 @@
           </div>
         </form>
 
-        <section class="result-grid" data-page-section="run">
+        <section class="file-state-card" id="fileStateCard" data-page-section="run" hidden>
+          <div>
+            <p data-i18n="fileFlow.readyLabel">Testcase file</p>
+            <strong id="fileStateTitle">No testcase file</strong>
+            <span id="fileStateMeta">0 test cases</span>
+          </div>
+          <div class="file-state-actions">
+            <a class="file-primary-action disabled" id="downloadCaseFileLink" href="#" aria-disabled="true" data-i18n="fileFlow.download">Download CSV</a>
+            <label class="file-secondary-action">
+              <span data-i18n="fileFlow.import">Import CSV</span>
+              <input id="caseFileInput" type="file" accept=".csv,text/csv">
+            </label>
+            <button type="button" class="file-secondary-action" id="runImportedFileButton" data-i18n="fileFlow.runImported" disabled>Run imported</button>
+            <button type="button" class="file-secondary-action" id="viewCaseDetailButton" data-i18n="fileFlow.viewDetail">Xem chi tiết</button>
+          </div>
+        </section>
+
+        <section class="result-grid testcase-detail-section" id="testcaseDetailSection" data-page-section="run" hidden>
           <article class="panel summary-panel">
             <div class="panel-heading">
               <h2 data-i18n="run.latest">Latest result</h2>
@@ -518,8 +555,8 @@
           <article class="panel">
             <div class="panel-heading">
               <div>
-                <p class="eyebrow" data-i18n="flow.eyebrow">AI Rendered Flow</p>
-                <h2 data-i18n="flow.title">Test cases</h2>
+                <p class="eyebrow" data-i18n="flow.eyebrow">Testcase File Preview</p>
+                <h2 data-i18n="flow.title">QC test cases</h2>
               </div>
               <button type="button" class="secondary compact-button" id="toggleCodeButton" data-i18n="flow.showCode">Show code</button>
             </div>
