@@ -641,6 +641,10 @@
                 <small data-i18n="docs.automation">Automation</small>
                 <strong>Playwright Chromium</strong>
               </span>
+              <span>
+                <small data-i18n="docs.localAi">Local AI</small>
+                <strong>Ollama qwen2.5-coder:0.5b</strong>
+              </span>
             </div>
           </div>
 
@@ -692,11 +696,12 @@
                 </div>
               </div>
               <div class="docs-flow">
-                <span>UI</span>
+                <span>Run Center</span>
                 <span>Backend API</span>
-                <span>Queue Worker</span>
+                <span>Ollama</span>
+                <span>CSV file</span>
                 <span>Playwright</span>
-                <span>PostgreSQL</span>
+                <span>Reports</span>
               </div>
             </section>
 
@@ -753,12 +758,12 @@
             <section id="docs-run-flow" class="docs-section">
               <h2 data-i18n="docs.runFlowTitle">5. Run Test Flow và Queue</h2>
               <ol class="docs-steps">
-                <li><span data-i18n="docs.runStepClick">User bấm</span> <strong>Run test</strong>.</li>
-                <li><span data-i18n="docs.runStepQueuedPrefix">Backend tạo</span> <code>TestRun</code> <span data-i18n="docs.runStepQueuedMiddle">với status</span> <code>queued</code> <span data-i18n="docs.runStepQueuedSuffix">và trả</span> <code>runId</code> <span data-i18n="docs.runStepQueuedEnd">ngay.</span></li>
-                <li><span data-i18n="docs.runStepPoll">Frontend hiển thị trạng thái queued/running và poll</span> <code>/api/runs/:id</code>.</li>
-                <li><span data-i18n="docs.runStepWorkerPrefix">Worker chuyển run sang</span> <code>running</code>, <span data-i18n="docs.runStepWorkerSuffix">gọi AI nếu cần, render spec và chạy Playwright Chromium.</span></li>
-                <li><span data-i18n="docs.runStepStore">Backend lưu</span> <code>TestResult</code>, <code>Artifact</code>, generated code, stdout/stderr.</li>
-                <li><span data-i18n="docs.runStepDonePrefix">Run kết thúc với</span> <code>passed</code>, <code>failed</code> <span data-i18n="docs.or">hoặc</span> <code>cancelled</code>.</li>
+                <li><span data-i18n="docs.runStepClick">User selects</span> <strong>Create testcase file</strong> <span data-i18n="docs.runStepClickSuffix">and clicks</span> <strong>Generate CSV</strong>.</li>
+                <li><span data-i18n="docs.runStepQueuedPrefix">Backend asks Ollama for</span> <code>coverageStrategy</code> <span data-i18n="docs.runStepQueuedMiddle">and a list of</span> <code>testcases</code>.</li>
+                <li><span data-i18n="docs.runStepPoll">Frontend shows the CSV file, row count, download/import controls, and the detail panel.</span></li>
+                <li><span data-i18n="docs.runStepWorkerPrefix">The tester can edit the CSV outside the app, then import it in</span> <code>Auto test from file</code>.</li>
+                <li><span data-i18n="docs.runStepStore">When the user clicks</span> <strong>Run imported</strong>, <span data-i18n="docs.runStepStoreSuffix">the backend runs only safely mapped automation cases through Playwright.</span></li>
+                <li><span data-i18n="docs.runStepDonePrefix">Results are saved to history as</span> <code>passed</code>, <code>failed</code> <span data-i18n="docs.or">or</span> <code>skipped/manual</code>.</li>
               </ol>
               <div class="docs-callout">
                 <strong>Server restart</strong>
@@ -807,6 +812,10 @@
                       <td><code>GET/POST /api/test-cases</code>, <code>PUT/DELETE /api/test-cases/:id</code></td>
                     </tr>
                     <tr>
+                      <td>Testcase files</td>
+                      <td><code>POST /api/testcase-files/generate</code>, <code>POST /api/testcase-files/import</code>, <code>POST /api/testcase-files/run</code>, <code>GET /api/testcase-files/download/:fileName</code></td>
+                    </tr>
+                    <tr>
                       <td>Runs</td>
                       <td><code>POST /api/run</code>, <code>GET /api/runs</code>, <code>GET /api/runs/:id</code></td>
                     </tr>
@@ -825,20 +834,28 @@
 
             <section id="docs-setup" class="docs-section">
               <h2 data-i18n="docs.setupTitle">8. Hướng dẫn chạy local</h2>
-              <pre class="docs-code">docker compose up -d postgres
+              <pre class="docs-code">docker compose up --build</pre>
+              <p><span data-i18n="docs.openSystemAt">Má»Ÿ há»‡ thá»‘ng táº¡i</span> <code>http://localhost:5000</code>.</p>
+              <h3 data-i18n="docs.hostRunTitle">Run backend on host</h3>
+              <pre class="docs-code">docker compose up -d postgres ollama ollama-model
 npm install
 npm run db:generate
 npm run db:migrate:dev
 npm run db:seed
 npm run web</pre>
-              <p><span data-i18n="docs.openSystemAt">Mở hệ thống tại</span> <code>http://localhost:5000</code>.</p>
+              
               <h3 data-i18n="docs.envTitle">Biến môi trường cần có</h3>
               <pre class="docs-code">PORT=5000
 DATABASE_URL=postgresql://passmark:passmark@localhost:5432/passmark
-LOCAL_AI_BASE_URL=https://your-local-ai-host/v1
-LOCAL_AI_API_KEY=your-local-ai-api-key
-LOCAL_AI_MODEL=your-local-ai-model</pre>
-              <p><code>LOCAL_AI_BASE_URL</code> <span data-i18n="docs.aiBaseNote">chỉ để base</span> <code>/v1</code>, <span data-i18n="docs.aiBaseNoteSuffix">không thêm</span> <code>/chat/completions</code>.</p>
+LOCAL_AI_PROVIDER=ollama
+LOCAL_AI_BASE_URL=http://localhost:11434
+LOCAL_AI_API_KEY=ollama
+LOCAL_AI_MODEL=qwen2.5-coder:0.5b
+LOCAL_AI_MAX_TOKENS=1536
+LOCAL_AI_CONTEXT_TOKENS=2048
+LOCAL_AI_NUM_THREAD=2
+LOCAL_AI_KEEP_ALIVE=2m</pre>
+              <p><code>LOCAL_AI_BASE_URL</code> <span data-i18n="docs.aiBaseNote">tro ve Ollama local</span>; <span data-i18n="docs.aiBaseNoteSuffix">backend goi native</span> <code>/api/chat</code> <span data-i18n="docs.aiBaseResourceNote">va gioi han tai nguyen bang model nho, context thap, 1 model loaded.</span></p>
             </section>
 
             <section id="docs-rules" class="docs-section">

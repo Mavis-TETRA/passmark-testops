@@ -5518,3 +5518,168 @@ button.secondary:hover,
   background: var(--surface-2);
   color: var(--muted);
 }
+
+/* Run progress and selection modal polish */
+body[data-run-mode="auto"] .simple-composer .selection-picker {
+  opacity: 1;
+}
+
+body[data-run-mode="auto"] .simple-composer .selection-toggle {
+  opacity: 0.62;
+}
+
+body.modal-open {
+  overflow: hidden;
+}
+
+.selection-backdrop {
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 3000 !important;
+  background: rgba(3, 4, 7, 0.72) !important;
+  backdrop-filter: blur(10px) !important;
+}
+
+.selection-popover {
+  position: fixed !important;
+  inset: 50% auto auto 50% !important;
+  z-index: 3010 !important;
+  grid-template-columns: minmax(150px, 190px) minmax(0, 1fr) !important;
+  width: min(880px, calc(100vw - 36px)) !important;
+  max-height: min(720px, calc(100vh - 72px)) !important;
+  border: 1px solid var(--line-strong) !important;
+  border-radius: 16px !important;
+  padding: 20px 22px 22px !important;
+  background: #16171c !important;
+  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.62) !important;
+  color: var(--text) !important;
+  opacity: 1 !important;
+  transform: translate(-50%, -50%) !important;
+}
+
+.selection-popover-heading {
+  min-height: 38px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.selection-popover-heading strong {
+  color: var(--text) !important;
+  font-size: 16px;
+}
+
+.selection-popover .selection-close {
+  border-color: var(--line-strong) !important;
+  background: var(--surface-3) !important;
+  color: var(--muted) !important;
+}
+
+.selection-popover .selection-close:hover {
+  background: #30313a !important;
+  color: #ffffff !important;
+}
+
+.selection-popover > label {
+  color: var(--muted) !important;
+}
+
+.selection-popover .project-select-row,
+.selection-popover .auth-panel,
+.selection-popover .auth-heading,
+.selection-popover .field-grid,
+.selection-popover .selector-details {
+  position: relative;
+  z-index: 1;
+}
+
+.selection-popover .project-select-row {
+  grid-template-columns: minmax(0, 0.92fr) minmax(0, 1fr) !important;
+}
+
+.selection-popover select,
+.selection-popover input,
+.selection-popover .project-selected-meta {
+  border-color: var(--line-strong) !important;
+  background: #101116 !important;
+  color: var(--text) !important;
+}
+
+.selection-popover .project-selected-meta {
+  color: var(--muted) !important;
+}
+
+.selection-popover .auth-panel {
+  border-color: var(--line) !important;
+  background: var(--surface-2) !important;
+}
+
+.selection-popover .auth-heading {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.progress-panel {
+  border-color: var(--line) !important;
+  border-radius: 14px !important;
+  padding: 12px !important;
+  background: var(--surface-1) !important;
+  box-shadow: none !important;
+}
+
+.progress-bar {
+  height: 5px !important;
+  border: 1px solid var(--line) !important;
+  background: #0f1014 !important;
+}
+
+.progress-bar span {
+  background: linear-gradient(90deg, #8b8d98, #d1d5db) !important;
+}
+
+.steps {
+  gap: 10px !important;
+  margin-top: 12px !important;
+}
+
+.steps li {
+  min-height: 34px !important;
+  border-color: var(--line) !important;
+  background: var(--surface-2) !important;
+  color: var(--muted) !important;
+  box-shadow: none !important;
+}
+
+.steps li.active {
+  border-color: rgba(209, 213, 219, 0.5) !important;
+  background: #2f3037 !important;
+  color: #ffffff !important;
+}
+
+.steps li.done {
+  border-color: rgba(126, 231, 135, 0.28) !important;
+  background: rgba(126, 231, 135, 0.1) !important;
+  color: var(--success) !important;
+}
+
+.steps li:not(.active):not(.done) {
+  opacity: 0.72;
+}
+
+@media (max-width: 760px) {
+  .selection-popover {
+    grid-template-columns: 1fr !important;
+    padding: 18px !important;
+  }
+
+  .selection-popover > label,
+  .selection-popover .project-select-row {
+    grid-column: 1 !important;
+  }
+
+  .selection-popover .project-select-row {
+    grid-template-columns: 1fr !important;
+  }
+
+  .steps {
+    grid-template-columns: 1fr !important;
+  }
+}
