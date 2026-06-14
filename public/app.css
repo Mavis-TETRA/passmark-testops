@@ -6133,6 +6133,7 @@ body[data-page="run"][data-workspace-item="none"] .history-panel {
 .sidebar-row-actions {
   gap: 2px !important;
   padding-right: 2px;
+  position: relative;
 }
 
 .sidebar-icon-action {
@@ -6145,11 +6146,58 @@ body[data-page="run"][data-workspace-item="none"] .history-panel {
   background: transparent !important;
   color: var(--muted) !important;
   font-size: 13px !important;
+  font-weight: 700 !important;
+  line-height: 1 !important;
 }
 
 .sidebar-icon-action:hover {
   background: var(--surface-3) !important;
   color: var(--text) !important;
+}
+
+.sidebar-action-menu {
+  position: absolute;
+  top: 28px;
+  right: 0;
+  z-index: 20;
+  display: grid;
+  min-width: 150px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 6px;
+  background: var(--surface-1);
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.35);
+}
+
+.sidebar-action-menu[hidden] {
+  display: none !important;
+}
+
+.sidebar-action-menu button {
+  width: 100%;
+  min-height: 30px;
+  border: 0;
+  border-radius: 7px;
+  padding: 6px 9px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sidebar-action-menu button:hover {
+  background: var(--surface-2);
+}
+
+.sidebar-action-menu button.danger {
+  color: var(--danger);
+}
+
+.sidebar-action-menu button.danger:hover {
+  background: rgba(255, 123, 114, 0.12);
 }
 
 .sidebar-thread-list {

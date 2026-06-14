@@ -1101,6 +1101,24 @@ async function loadSidebarSuites() {
   sidebarState.suitesByProject = Object.fromEntries(entries);
 }
 
+function closeSidebarActionMenus(exceptMenu = null) {
+  for (const menu of document.querySelectorAll('.sidebar-action-menu')) {
+    if (menu !== exceptMenu) {
+      menu.hidden = true;
+    }
+  }
+}
+
+function toggleSidebarActionMenu(menu) {
+  if (!menu) {
+    return;
+  }
+
+  const nextHidden = !menu.hidden;
+  closeSidebarActionMenus(menu);
+  menu.hidden = nextHidden;
+}
+
 function renderSidebarWorkspace() {
   if (!sidebarProjectList) {
     return;
@@ -1128,8 +1146,11 @@ function renderSidebarWorkspace() {
         </span>
       </button>
       <span class="sidebar-row-actions">
-        <button type="button" class="sidebar-icon-action" data-action="add-suite" title="${escapeHtml(t('sidebar.addItem', 'Add item'))}">+</button>
-        <button type="button" class="sidebar-icon-action danger" data-action="delete-project" title="${escapeHtml(t('projects.delete', 'Delete project'))}">×</button>
+        <button type="button" class="sidebar-icon-action" data-action="project-menu" title="${escapeHtml(t('sidebar.moreActions', 'More actions'))}">...</button>
+        <span class="sidebar-action-menu" hidden>
+          <button type="button" data-action="add-suite">${escapeHtml(t('sidebar.addItem', 'Add item'))}</button>
+          <button type="button" class="danger" data-action="delete-project">${escapeHtml(t('sidebar.deleteWorkspace', 'Delete workspace'))}</button>
+        </span>
       </span>
     `;
 
@@ -1137,12 +1158,18 @@ function renderSidebarWorkspace() {
       selectProject(project.id);
       showPage('run');
     });
+    header.querySelector('[data-action="project-menu"]').addEventListener('click', (event) => {
+      event.stopPropagation();
+      toggleSidebarActionMenu(header.querySelector('.sidebar-action-menu'));
+    });
     header.querySelector('[data-action="add-suite"]').addEventListener('click', (event) => {
       event.stopPropagation();
+      closeSidebarActionMenus();
       createSidebarSuite(project.id);
     });
     header.querySelector('[data-action="delete-project"]').addEventListener('click', (event) => {
       event.stopPropagation();
+      closeSidebarActionMenus();
       deleteProjectById(project.id);
     });
     group.appendChild(header);
@@ -1165,7 +1192,12 @@ function renderSidebarWorkspace() {
               <strong>${escapeHtml(suite.name)}</strong>
               <small>${escapeHtml(suite.type || 'custom')}</small>
             </span>
-            <button type="button" class="sidebar-icon-action danger" title="${escapeHtml(t('suite.delete', 'Delete item'))}">×</button>
+            <span class="sidebar-row-actions">
+              <button type="button" class="sidebar-icon-action" data-action="item-menu" title="${escapeHtml(t('sidebar.moreActions', 'More actions'))}">...</button>
+              <span class="sidebar-action-menu" hidden>
+                <button type="button" class="danger" data-action="delete-suite">${escapeHtml(t('sidebar.deleteItem', 'Delete item'))}</button>
+              </span>
+            </span>
           `;
           item.addEventListener('click', () => openWorkspaceItem(project.id, suite.id));
           item.addEventListener('keydown', (event) => {
@@ -1174,8 +1206,13 @@ function renderSidebarWorkspace() {
               openWorkspaceItem(project.id, suite.id);
             }
           });
-          item.querySelector('.sidebar-icon-action').addEventListener('click', (event) => {
+          item.querySelector('[data-action="item-menu"]').addEventListener('click', (event) => {
             event.stopPropagation();
+            toggleSidebarActionMenu(item.querySelector('.sidebar-action-menu'));
+          });
+          item.querySelector('[data-action="delete-suite"]').addEventListener('click', (event) => {
+            event.stopPropagation();
+            closeSidebarActionMenus();
             deleteSuiteById(project.id, suite.id);
           });
           list.appendChild(item);
@@ -2987,6 +3024,10 @@ actionMenu.addEventListener('click', (event) => {
   event.stopPropagation();
 });
 document.addEventListener('click', (event) => {
+  if (!event.target.closest?.('.sidebar-row-actions')) {
+    closeSidebarActionMenus();
+  }
+
   if (!selectionPopover.hidden) {
     setSelectionPopover(false);
   }
@@ -2996,6 +3037,10 @@ document.addEventListener('click', (event) => {
   }
 });
 document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') {
+    closeSidebarActionMenus();
+  }
+
   if (event.key === 'Escape' && !selectionPopover.hidden) {
     setSelectionPopover(false);
   }
