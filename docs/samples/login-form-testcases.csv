@@ -1,0 +1,20 @@
+caseId,projectId,projectName,module,requirementId,feature,title,objective,interDependencies,preconditions,testDataPreparation,testData,steps,actionInputData,expectedResult,priority,regression,platform,tools,severity,testType,automationCandidate,automationKind,selector,expectedText,inputImage,actualImage,screenshotPolicy,status,actualResult,defectId,testerName,reviewerName,reviewDate,notes,durationMs
+TC-LOGIN-001,,Demo Login QA,Authentication,REQ-AUTH-001,Login,Valid user can sign in,Verify that an active user can sign in with valid credentials,,Login page is available,Create active user account,"username=active.user@example.com; password=ValidPass123","Open login page
+Enter valid username and password
+Submit the form",Valid credentials,User lands on the authenticated dashboard,critical,yes,Web,Playwright Chromium,critical,functional,yes,form_validation,,,login-valid-input.png,,on-failure,,,,,,Happy path baseline,
+TC-LOGIN-002,,Demo Login QA,Authentication,REQ-AUTH-002,Login,Invalid password is rejected,Verify that the system rejects an incorrect password without signing the user in,,Login page is available,Use existing active user with wrong password,"username=active.user@example.com; password=WrongPass123","Open login page
+Enter valid username and invalid password
+Submit the form",Invalid password,Error message is shown and the user remains unauthenticated,high,yes,Web,Playwright Chromium,major,negative,yes,form_validation,,Invalid email or password,login-invalid-password.png,,always,,,,,,Should not reveal whether the account exists,
+TC-LOGIN-003,,Demo Login QA,Authentication,REQ-AUTH-003,Validation,Required fields show validation,Verify required username and password validation,,Login page is available,None,"username=; password=","Open login page
+Leave username and password empty
+Submit the form",Empty form,Required-field validation is visible and no request succeeds,high,yes,Web,Playwright Chromium,major,validation,yes,form_validation,,Required,login-required-fields.png,,always,,,,,,Useful for first UI regression demo,
+TC-LOGIN-004,,Demo Login QA,Authentication,REQ-AUTH-004,Account state,Locked account cannot sign in,Verify locked account behavior and message,,Locked test account exists,Create locked user in test data,"username=locked.user@example.com; password=ValidPass123","Open login page
+Enter locked account credentials
+Submit the form",Locked account credentials,Access is denied with a locked-account message,high,yes,Web,Playwright Chromium,major,functional,partial,body_text_contains,,account is locked,login-locked-account.png,,always,,,,,,May require seeded account data,
+TC-LOGIN-005,,Demo Login QA,Session,REQ-AUTH-005,Session timeout,Expired session redirects to login,Verify that an expired authenticated session returns to login,,User can sign in and session timeout can be simulated,Shorten session lifetime or use expired token,"expiredSession=true","Open app with expired session
+Navigate to protected dashboard
+Observe redirect or timeout message",Expired session,User is redirected to login or sees a clear timeout message,medium,yes,Web,Playwright Chromium,major,regression,partial,generic_visible_content,,session expired,login-session-timeout.png,,on-failure,,,,,,May be manual if timeout cannot be controlled,
+TC-LOGIN-006,,Demo Login QA,Accessibility,REQ-A11Y-001,Accessible labels,Login controls have accessible names,Verify username password and submit controls are labeled for assistive technology,,Login page is available,None,"screenReader=true","Open login page
+Inspect username field label
+Inspect password field label
+Inspect submit button accessible name",Accessibility inspection,Inputs and submit action have clear accessible names,medium,yes,Web,Playwright Chromium,minor,accessibility,yes,generic_visible_content,,Login,login-accessibility.png,,on-failure,,,,,,Good quick check before deeper a11y tooling,

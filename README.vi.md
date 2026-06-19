@@ -7,82 +7,107 @@
   <img alt="QC Files" src="https://img.shields.io/badge/Export-CSV%20%7C%20Excel%20%7C%20Word-16a34a?style=for-the-badge">
 </p>
 
-**Passmark TestOps** là AI TestOps chạy local cho QC/Tester: tạo file testcase chuẩn QC trước, cho tester tải về chỉnh sửa, import lại CSV, chạy automation bằng Playwright, lưu lịch sử, ảnh evidence và xuất file kết quả cuối cùng.
+**Passmark TestOps biến URL và mô tả nghiệp vụ thành file testcase chuẩn QC trong vài phút, chạy local mặc định.**
+
+Sản phẩm dành cho QC/Tester vẫn cần artifact có thể review trước khi automation: sinh CSV/Excel/Word, tải về chỉnh sửa, import CSV lại hệ thống, chạy Playwright an toàn, lưu screenshot và xuất file kết quả cuối cùng.
 
 <p>
-  <a href="./README.md"><strong>Language index</strong></a>
+  <a href="./README.md"><strong>Trang chọn ngôn ngữ</strong></a>
   &nbsp;|&nbsp;
   <a href="./README.en.md"><strong>English</strong></a>
 </p>
 
-## Điểm nổi bật
+## Vì Sao Nên Thử
 
-| Nhu cầu | Passmark TestOps xử lý |
-| --- | --- |
-| Viết testcase nhanh nhưng vẫn đúng chuẩn QC | AI tạo file testcase theo cấu trúc Objective, Step, Expected Result, Priority, Actual Result, Pass/Fail |
-| Tester cần review trước khi chạy auto | Xuất CSV, Excel-compatible `.xls`, Word-compatible `.doc` |
-| Một project có nhiều luồng kiểm thử nhỏ | Project là nhóm lớn, Test Suite là từng item/luồng riêng giống thread |
-| Không muốn phụ thuộc API AI bên ngoài | Dùng Ollama local với model mặc định `qwen2.5-coder:0.5b` |
-| Máy triển khai tài nguyên thấp | Giới hạn RAM/GPU, context, token, thread và số model loaded |
-| Cần bằng chứng khi fail | Playwright tự chụp screenshot và ghi actual result vào file kết quả |
+Viết testcase cho login, register, checkout, SEO hoặc UI regression thường mất 1-2 giờ trước khi tester bắt đầu chạy. Passmark TestOps rút ngắn bước soạn bản nháp:
 
-## Flow sản phẩm
+```text
+URL + bối cảnh nghiệp vụ
+-> 40+ dòng testcase có cấu trúc
+-> CSV / Excel / Word để QC review
+-> tùy chọn chạy Playwright
+-> file kết quả có Actual Result, Pass/Fail và screenshot
+```
+
+Runtime mặc định chạy local: Docker Compose bật PostgreSQL, Ollama và web app. Model mặc định là `qwen2.5-coder:0.5b`, nên không cần API AI trả phí trong flow mặc định.
+
+## Chạy Nhanh Bằng Docker
+
+Yêu cầu:
+
+- Docker Desktop đang chạy.
+- Máy còn khoảng 4 GB RAM trống cho service Ollama.
+
+Chạy toàn bộ hệ thống:
+
+```powershell
+git clone https://github.com/Mavis-TETRA/passmark-testops.git
+cd passmark-testops
+copy .env.example .env
+docker compose up --build
+```
+
+Mở app:
+
+```text
+http://localhost:5000
+```
+
+Lần đầu có thể lâu hơn vì Docker cần pull image và Ollama cần tải model.
+
+## Prompt Nên Thử Đầu Tiên
+
+1. Mở `http://localhost:5000`.
+2. Giữ mode **Create testcase file**.
+3. Nhập URL public/staging mà bạn được phép test.
+4. Dán request này:
+
+```text
+Create QC testcases for a login form, including valid login, invalid password,
+empty required fields, locked account, session timeout, accessibility labels,
+and screenshot evidence for failures.
+```
+
+Kết quả mong đợi: app sinh bộ file testcase. Tải Excel hoặc Word để review thủ công, dùng CSV khi muốn import file đã chỉnh sửa lại app để chạy automation.
+
+## Demo Và File Mẫu
+
+- CSV mẫu đúng format import của app: [docs/samples/login-form-testcases.csv](./docs/samples/login-form-testcases.csv)
+- Format app xuất ra: CSV, Excel-compatible `.xls`, Word-compatible `.doc`
+- Asset nên bổ sung tiếp: GIF 30-60 giây cho flow nhập URL -> sinh file -> tải file -> import chạy lại.
+
+## Flow Sản Phẩm
 
 ```mermaid
 flowchart LR
-  A["Nhập yêu cầu test"] --> B["AI đề xuất số lượng case"]
-  B --> C["Sinh file testcase QC"]
-  C --> D["Tải CSV / Excel / Word"]
-  D --> E["Tester chỉnh sửa"]
-  E --> F["Import CSV lại app"]
-  F --> G["Chạy auto test"]
-  G --> H["Ghi Actual Result, Pass/Fail, Screenshot"]
-  H --> I["Xuất file kết quả cuối cùng"]
+  A["Nhập URL + yêu cầu test"] --> B["AI local sinh file testcase"]
+  B --> C["Xuất CSV / Excel / Word"]
+  C --> D["Tester review và chỉnh sửa"]
+  D --> E["Import CSV lại app"]
+  E --> F["Chạy Playwright an toàn"]
+  F --> G["Ghi Actual Result + screenshot"]
+  G --> H["Xuất bộ file kết quả"]
 ```
 
-## Giao diện mục tiêu
+## Giá Trị Chính
 
-```text
-Passmark TestOps
-├─ Projects
-│  ├─ Website QA
-│  │  ├─ Homepage SEO review
-│  │  ├─ UI cho người lớn tuổi
-│  │  └─ Checkout regression
-│  └─ Landing Page QA
-│     └─ Campaign tracking
-│
-└─ Current item
-   Bạn muốn test điều gì?
-   [ https://example.com/                                ]
-   [ Mô tả module, rủi ro, vai trò user, dữ liệu test... ]
-   [ Sinh file testcase ]
+| Nỗi đau của QC | Passmark TestOps xử lý |
+| --- | --- |
+| Viết testcase mất nhiều thời gian | AI tạo dòng testcase có objective, steps, expected result, priority, severity và gợi ý automation |
+| Tester cần review trước automation | CSV/Excel/Word là artifact chính, không phải phần phụ |
+| Không phải testcase nào cũng nên auto-run | CSV import được map sang nhóm automation an toàn; case manual vẫn giữ manual |
+| Không muốn phụ thuộc API AI ngoài | Mặc định dùng Ollama local |
+| Khi fail cần evidence | Playwright có thể chụp screenshot và ghi actual result vào file cuối |
 
-   Run history
-   - File testcase: 40 cases, chưa chạy auto
-   - Auto test: 38/40 đạt, có screenshot fail
-```
+## 3 Use Case Dễ Demo
 
-## Hai trạng thái chính
+| Use case | Gợi ý prompt |
+| --- | --- |
+| Login form | Đăng nhập đúng, sai mật khẩu, bỏ trống field, tài khoản khóa, timeout session, accessibility |
+| API endpoint | Auth, required fields, invalid payload, status code, response shape, error state |
+| UI regression | Nội dung hiển thị, navigation, responsive layout, form, hình ảnh, trạng thái lỗi, screenshot evidence |
 
-### 1. Tạo file testcase
-
-1. Chọn project và item/luồng test.
-2. Nhập URL hoặc dùng target có sẵn.
-3. Mô tả điều muốn kiểm thử bằng ngôn ngữ tự nhiên.
-4. AI đóng vai QC Lead để ước lượng số lượng testcase cần thiết.
-5. Backend bắt buộc tạo đủ số case theo khoảng cấu hình, mặc định tối thiểu 40 case.
-6. Tải file CSV/Excel/Word để tester review và chỉnh sửa.
-
-### 2. Auto test theo file
-
-1. Import CSV đã chỉnh sửa hoặc dùng file vừa tạo.
-2. Hệ thống chỉ chạy các testcase thuộc nhóm automation an toàn, có whitelist.
-3. Playwright chạy Chromium, ghi Actual Result, Pass/Fail, Defect ID placeholder.
-4. Khi fail, hệ thống chụp screenshot để đưa vào file kết quả.
-5. Tải kết quả cuối bằng CSV/Excel/Word.
-
-## Kiến trúc
+## Kiến Trúc
 
 ```mermaid
 flowchart TB
@@ -95,7 +120,7 @@ flowchart TB
   DB --> UI
 ```
 
-## Tech stack
+## Tech Stack
 
 | Layer | Công nghệ |
 | --- | --- |
@@ -107,58 +132,7 @@ flowchart TB
 | Export | CSV, HTML Office-compatible Excel/Word |
 | Runtime | Docker Compose |
 
-## Cấu trúc dự án
-
-```text
-.
-|-- public/                  # UI, CSS, i18n
-|-- prisma/                  # Prisma schema, migrations, seed
-|-- src/
-|   |-- server.ts            # API, testcase file flow, run queue
-|   |-- local-ai-client.ts   # Client gọi Ollama/OpenAI-compatible AI
-|   |-- db.ts                # Prisma client và seed helper
-|   |-- seo-cases.ts         # Case mẫu/legacy
-|   |-- seo-test-plan.ts     # Prompt và fallback plan
-|   `-- seo-template-renderer.ts
-|-- storage/                 # Runtime storage, postgres/ollama data
-|-- tests/                   # Playwright generated tests
-|-- docker-compose.yml       # PostgreSQL + Ollama + app
-|-- Dockerfile               # App image
-|-- .env.example             # Mẫu cấu hình môi trường
-`-- README.md                # Trang chọn ngôn ngữ
-```
-
-## Chạy nhanh bằng Docker
-
-Yêu cầu:
-
-- Docker Desktop đang chạy.
-- Máy còn tối thiểu khoảng 4 GB RAM trống cho service Ollama.
-
-Chạy toàn bộ hệ thống:
-
-```powershell
-docker compose up --build
-```
-
-Mở ứng dụng:
-
-```text
-http://localhost:5000
-```
-
-Docker Compose sẽ chạy:
-
-| Service | Vai trò |
-| --- | --- |
-| `postgres` | Database chính |
-| `ollama` | Local AI server |
-| `ollama-model` | Job pull model `qwen2.5-coder:0.5b`, chạy xong tự dừng |
-| `app` | Passmark TestOps web app |
-
-> `ollama-model` dừng sau khi pull model là bình thường. Container cần chạy liên tục là `postgres`, `ollama`, và `app`.
-
-## Chạy app ngoài Docker
+## Chạy App Ngoài Docker
 
 Nếu muốn chạy backend bằng `npm run web` trên máy host:
 
@@ -177,9 +151,9 @@ Mở:
 http://localhost:5000
 ```
 
-## Cấu hình môi trường
+## Cấu Hình Môi Trường
 
-Tạo file `.env` từ `.env.example`.
+Tạo `.env` từ `.env.example`.
 
 ```env
 PORT=5000
@@ -196,37 +170,26 @@ LOCAL_AI_TEMPERATURE=0.2
 LOCAL_AI_KEEP_ALIVE=2m
 ```
 
-Khi chạy trong Docker Compose, app dùng URL nội bộ:
+Khi app chạy trong Docker Compose, app dùng URL nội bộ:
 
 ```env
 LOCAL_AI_BASE_URL=http://ollama:11434
 ```
 
-Bạn không cần tự đổi giá trị này trong Compose vì đã được cấu hình sẵn trong `docker-compose.yml`.
+Docker Compose đã cấu hình sẵn giá trị này cho service `app`.
 
-## Giới hạn tài nguyên AI local
+## Docker Services
 
-Model mặc định:
+| Service | Vai trò |
+| --- | --- |
+| `postgres` | Database chính |
+| `ollama` | Local AI server |
+| `ollama-model` | Job pull model `qwen2.5-coder:0.5b`, chạy xong tự dừng |
+| `app` | Passmark TestOps web app |
 
-```text
-qwen2.5-coder:0.5b
-```
+`ollama-model` dừng sau khi pull model là bình thường. Container cần chạy liên tục là `postgres`, `ollama` và `app`.
 
-Cấu hình tiết kiệm tài nguyên:
-
-- `LOCAL_AI_CONTEXT_TOKENS=2048`
-- `LOCAL_AI_MAX_TOKENS=1536`
-- `LOCAL_AI_NUM_THREAD=2`
-- `LOCAL_AI_KEEP_ALIVE=2m`
-- `OLLAMA_NUM_PARALLEL=1`
-- `OLLAMA_MAX_LOADED_MODELS=1`
-- Docker `ollama` có `mem_limit: 4g`
-- Docker `ollama` có `cpus: "2.0"`
-- GPU NVIDIA tắt mặc định bằng `NVIDIA_VISIBLE_DEVICES=none`
-
-Mục tiêu là AI đủ dùng để tạo testcase nhưng không chiếm quá nhiều RAM/GPU của máy triển khai.
-
-## Lệnh thường dùng
+## Lệnh Thường Dùng
 
 ```json
 {
@@ -259,13 +222,7 @@ Hoặc đổi `PORT` trong `.env`.
 
 ### PostgreSQL chưa chạy
 
-Nếu `npm run web` báo:
-
-```text
-Can't reach database server at localhost:5432
-```
-
-Hãy bật database:
+Nếu `npm run web` báo không kết nối được `localhost:5432`, bật database:
 
 ```powershell
 docker compose up -d postgres
@@ -277,9 +234,17 @@ docker compose up -d postgres
 
 ### AI trả JSON lỗi hoặc thiếu case
 
-Hệ thống có fallback để không làm hỏng flow. Với model nhỏ như `qwen2.5-coder:0.5b`, chất lượng có thể không bằng model lớn. Có thể đổi model sau, nhưng nên cân nhắc RAM/GPU.
+App có fallback để không làm hỏng flow. Với model nhỏ như `qwen2.5-coder:0.5b`, chất lượng có thể không bằng model lớn. Có thể đổi model sau, nhưng nên cân nhắc RAM/GPU.
 
-## Nguyên tắc phát triển
+## Metadata Nên Cập Nhật Trên GitHub
+
+Các mục này chỉnh trực tiếp trên GitHub, không nằm trong file repo:
+
+- Description: `Local AI QC testcase generator: URL + testing request -> CSV/Excel/Word testcases + Playwright result evidence`
+- Topics: `ai-testing`, `qc`, `testcase-generator`, `playwright`, `ollama`, `test-automation`, `local-ai`, `postgresql`
+- Website: thêm link demo video, screenshot hoặc docs public khi có.
+
+## Nguyên Tắc Phát Triển
 
 - Frontend không gọi AI trực tiếp.
 - Backend gọi Ollama qua `src/local-ai-client.ts`.

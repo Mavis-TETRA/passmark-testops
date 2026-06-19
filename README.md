@@ -7,64 +7,79 @@
   <img alt="QC Files" src="https://img.shields.io/badge/Export-CSV%20%7C%20Excel%20%7C%20Word-16a34a?style=for-the-badge">
 </p>
 
-**Local AI testcase generation and lightweight automation runner for QC teams.**
+**Local AI QC testcase generator and lightweight automation runner.**
 
-Passmark TestOps helps testers turn a natural-language testing request into a QC-ready testcase file, review it outside the app, import it back, run supported automation, capture screenshots, and export the final result bundle.
+Type a URL plus a business testing request, then get a QC-ready testcase file in CSV, Excel-compatible, and Word-compatible formats. Review it outside the app, import the CSV back, run safe Playwright automation, and export the final result bundle with actual results and screenshots.
 
-<table>
-  <tr>
-    <td><strong>Primary flow</strong></td>
-    <td>AI testcase file first, automation second.</td>
-  </tr>
-  <tr>
-    <td><strong>Best for</strong></td>
-    <td>QC teams that want editable testcase artifacts before running automated checks.</td>
-  </tr>
-  <tr>
-    <td><strong>Runtime</strong></td>
-    <td>Docker Compose with PostgreSQL, Ollama, and the web app.</td>
-  </tr>
-</table>
-
-## Choose Language
+## Pick A Language
 
 <p>
-  <a href="./README.vi.md"><strong>Đọc bản tiếng Việt</strong></a>
+  <a href="./README.en.md"><strong>English guide</strong></a>
   &nbsp;|&nbsp;
-  <a href="./README.en.md"><strong>Read the English guide</strong></a>
+  <a href="./README.vi.md"><strong>Hướng dẫn tiếng Việt</strong></a>
 </p>
 
-## Product Flow
+## 30-Second Pitch
+
+- **Before:** a QC/Tester spends 1-2 hours writing login, registration, checkout, SEO, or UI regression testcases by hand.
+- **After:** enter a URL and a short request, then export a structured testcase file with steps, expected results, priorities, and automation hints.
+- **Local-first:** runs with Docker Compose, PostgreSQL, Ollama, and Playwright. No paid AI API is required by default.
+
+## Quick Start
+
+```powershell
+git clone https://github.com/Mavis-TETRA/passmark-testops.git
+cd passmark-testops
+copy .env.example .env
+docker compose up --build
+```
+
+Open:
+
+```text
+http://localhost:5000
+```
+
+Try this prompt:
+
+```text
+Create QC testcases for a login form, including valid login, invalid password,
+empty required fields, locked account, session timeout, accessibility labels,
+and screenshot evidence for failures.
+```
+
+## Demo Artifacts
+
+- Sample import/output CSV: [docs/samples/login-form-testcases.csv](./docs/samples/login-form-testcases.csv)
+- The app exports the same testcase data as CSV, Excel-compatible `.xls`, and Word-compatible `.doc`.
+
+## Main Flow
 
 ```mermaid
 flowchart LR
-  A["Describe what to test"] --> B["AI creates QC testcase file"]
+  A["Enter URL + testing request"] --> B["Local AI creates testcase file"]
   B --> C["Export CSV / Excel / Word"]
   C --> D["Tester reviews and edits"]
-  D --> E["Import CSV"]
-  E --> F["Run supported automation"]
-  F --> G["Capture actual result and screenshots"]
-  G --> H["Export final result files"]
+  D --> E["Import CSV back"]
+  E --> F["Run safe Playwright automation"]
+  F --> G["Capture Actual Result + screenshots"]
+  G --> H["Export final result bundle"]
 ```
 
-## Interface Preview
+## Best First Use Cases
 
-```text
-Passmark TestOps
-├─ Project: Website QA
-│  ├─ Homepage SEO review
-│  ├─ Elder-user UI check
-│  └─ Checkout regression
-│
-└─ Current item
-   What do you want to test?
-   [ https://example.com/                                ]
-   [ Describe risks, modules, pages, roles, data...      ]
-   [ Generate testcase file ]
+| Use case | What to try |
+| --- | --- |
+| Login form | Generate positive, negative, validation, session, and security-adjacent testcase rows |
+| API endpoint | Draft request/response, status code, validation, auth, and error-state testcase rows |
+| UI regression | Check visible content, navigation, responsive layout, forms, screenshots, and broken states |
 
-   Run history
-   - testcase file generated: 40 cases
-   - auto test result: 38/40 passed, screenshots attached
-```
+## Suggested GitHub Repo Metadata
 
-> Markdown platforms usually block JavaScript-powered language switching inside README files, so this repository uses reliable language links instead.
+These are not stored in the codebase, but they help strangers understand the repo faster:
+
+- Description: `Local AI QC testcase generator: URL + testing request -> CSV/Excel/Word testcases + Playwright result evidence`
+- Topics: `ai-testing`, `qc`, `testcase-generator`, `playwright`, `ollama`, `test-automation`, `local-ai`, `postgresql`
+- Website: add a demo video, screenshot, or hosted docs link when available.
+
+Markdown platforms usually block JavaScript-powered language switching inside README files, so this repository uses reliable language links instead.

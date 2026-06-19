@@ -16,10 +16,19 @@
     "test:chromium": "playwright test --project=chromium",
     "ai:test": "tsx scripts/generate-playwright-test.ts"
   },
-  "keywords": [],
+  "keywords": [
+    "ai-testing",
+    "qc",
+    "testcase-generator",
+    "playwright",
+    "ollama",
+    "test-automation",
+    "local-ai",
+    "postgresql"
+  ],
   "author": "",
   "license": "ISC",
-  "description": "",
+  "description": "Local AI QC testcase generator: URL plus testing request to CSV, Excel, Word, and Playwright result evidence.",
   "devDependencies": {
     "@playwright/test": "^1.59.1",
     "@types/node": "^25.6.2",
