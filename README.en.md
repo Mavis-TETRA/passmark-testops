@@ -22,7 +22,7 @@
 | Write testcases faster while keeping QC structure | AI creates Objective, Step, Expected Result, Priority, Actual Result, Pass/Fail-ready rows |
 | Review before automation | Export CSV, Excel-compatible `.xls`, and Word-compatible `.doc` files |
 | Keep multiple testing threads inside one project | Projects act as folders; Test Suites act as separate item/thread flows |
-| Avoid external AI API dependency | Uses local Ollama with default model `qwen2.5-coder:0.5b` |
+| Avoid external AI API dependency | Uses local Ollama with default model `qwen2.5-coder:7b` |
 | Run on modest deployment machines | Limits RAM/GPU, context, tokens, threads, and loaded model count |
 | Preserve failure evidence | Playwright captures screenshots and writes actual results into exported files |
 
@@ -133,7 +133,7 @@ flowchart TB
 Requirements:
 
 - Docker Desktop is running.
-- The machine has roughly 4 GB RAM available for the Ollama service.
+- The machine has roughly 8 GB RAM available for the Ollama service.
 
 Start everything:
 
@@ -153,7 +153,7 @@ Docker Compose runs:
 | --- | --- |
 | `postgres` | Primary database |
 | `ollama` | Local AI server |
-| `ollama-model` | One-time model pull job for `qwen2.5-coder:0.5b` |
+| `ollama-model` | One-time model pull job for `qwen2.5-coder:7b` |
 | `app` | Passmark TestOps web app |
 
 > It is normal for `ollama-model` to stop after pulling the model. The long-running containers are `postgres`, `ollama`, and `app`.
@@ -187,10 +187,10 @@ DATABASE_URL=postgresql://passmark:passmark@localhost:5432/passmark
 LOCAL_AI_PROVIDER=ollama
 LOCAL_AI_BASE_URL=http://localhost:11434
 LOCAL_AI_API_KEY=ollama
-LOCAL_AI_MODEL=qwen2.5-coder:0.5b
-LOCAL_AI_TIMEOUT_MS=120000
+LOCAL_AI_MODEL=qwen2.5-coder:7b
+LOCAL_AI_TIMEOUT_MS=180000
 LOCAL_AI_MAX_TOKENS=1536
-LOCAL_AI_CONTEXT_TOKENS=2048
+LOCAL_AI_CONTEXT_TOKENS=4096
 LOCAL_AI_NUM_THREAD=2
 LOCAL_AI_TEMPERATURE=0.2
 LOCAL_AI_KEEP_ALIVE=2m
@@ -209,18 +209,18 @@ You do not need to set this manually for Docker because `docker-compose.yml` alr
 Default model:
 
 ```text
-qwen2.5-coder:0.5b
+qwen2.5-coder:7b
 ```
 
 Low-resource settings:
 
-- `LOCAL_AI_CONTEXT_TOKENS=2048`
+- `LOCAL_AI_CONTEXT_TOKENS=4096`
 - `LOCAL_AI_MAX_TOKENS=1536`
 - `LOCAL_AI_NUM_THREAD=2`
 - `LOCAL_AI_KEEP_ALIVE=2m`
 - `OLLAMA_NUM_PARALLEL=1`
 - `OLLAMA_MAX_LOADED_MODELS=1`
-- Docker `ollama` has `mem_limit: 4g`
+- Docker `ollama` has `mem_limit: 8g`
 - Docker `ollama` has `cpus: "2.0"`
 - NVIDIA GPU is disabled by default with `NVIDIA_VISIBLE_DEVICES=none`
 
@@ -277,7 +277,7 @@ That is expected after the model is pulled. It is a one-time job, not a backgrou
 
 ### AI Returns Bad JSON Or Too Few Cases
 
-The app has fallback behavior to keep the flow working. With a very small model such as `qwen2.5-coder:0.5b`, quality may be lower than larger models. You can change the model later, but consider RAM/GPU impact first.
+The app has fallback behavior to keep the flow working. The default `qwen2.5-coder:7b` profile is capped around an 8 GB Ollama container budget with one loaded model, modest context, and low parallelism. You can change the model later, but consider RAM/GPU impact first.
 
 ## Development Notes
 

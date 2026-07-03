@@ -86,6 +86,12 @@ const usernameSelector = document.querySelector('#usernameSelector');
 const passwordSelector = document.querySelector('#passwordSelector');
 const submitSelector = document.querySelector('#submitSelector');
 const aiRequest = document.querySelector('#aiRequest');
+const taskSource = document.querySelector('#taskSource');
+const taskText = document.querySelector('#taskText');
+const sourceContext = document.querySelector('#sourceContext');
+const taskImageInput = document.querySelector('#taskImageInput');
+const taskImageMeta = document.querySelector('#taskImageMeta');
+const pastedImageState = [];
 const generatedPlan = document.querySelector('#generatedPlan');
 const generatedCode = document.querySelector('#generatedCode');
 const generatedPath = document.querySelector('#generatedPath');
@@ -124,6 +130,23 @@ const factOverlay = document.querySelector('#factOverlay');
 const closeFactButton = document.querySelector('#closeFactButton');
 const factTitle = document.querySelector('#factTitle');
 const factBody = document.querySelector('#factBody');
+const projectCreateOverlay = document.querySelector('#projectCreateOverlay');
+const projectCreateForm = document.querySelector('#projectCreateForm');
+const projectCreateCloseButton = document.querySelector('#projectCreateCloseButton');
+const projectCreateCancelButton = document.querySelector('#projectCreateCancelButton');
+const projectCreateSubmitButton = document.querySelector('#projectCreateSubmitButton');
+const projectCreatePrompt = document.querySelector('#projectCreatePrompt');
+const projectCreateName = document.querySelector('#projectCreateName');
+const projectCreateEnvironment = document.querySelector('#projectCreateEnvironment');
+const projectCreateBaseUrl = document.querySelector('#projectCreateBaseUrl');
+const projectCreateDescription = document.querySelector('#projectCreateDescription');
+const projectCreateWithTarget = document.querySelector('#projectCreateWithTarget');
+const projectCreateTargetName = document.querySelector('#projectCreateTargetName');
+const projectCreateTargetType = document.querySelector('#projectCreateTargetType');
+const projectCreateTargetUrl = document.querySelector('#projectCreateTargetUrl');
+const projectCreateTargetPath = document.querySelector('#projectCreateTargetPath');
+const projectCreateTargetUrlField = document.querySelector('.project-create-target-url');
+const projectCreateTargetPathField = document.querySelector('.project-create-target-path');
 const latestTime = document.querySelector('#latestTime');
 const metricTotal = document.querySelector('#metricTotal');
 const metricPassed = document.querySelector('#metricPassed');
@@ -189,6 +212,10 @@ const runLockControls = [
   projectSelect,
   suiteSelect,
   targetSelect,
+  taskSource,
+  taskText,
+  sourceContext,
+  taskImageInput,
   selectionToggle,
   siteUrl,
   aiRequest,
@@ -349,11 +376,12 @@ function refreshLocalizedUi() {
   }
 
   updateSelectionSummary();
+  updateTaskImageMeta();
   updateWorkspaceTitle();
 }
 
 function showPage(page, options = {}) {
-  const nextPage = ['run', 'projects', 'suites', 'reports', 'settings', 'docs'].includes(page) ? page : 'run';
+  const nextPage = ['run', 'suites', 'reports', 'settings', 'docs'].includes(page) ? page : 'run';
   pageState.current = nextPage;
   document.body.dataset.page = nextPage;
 
@@ -689,6 +717,174 @@ function collectAuth() {
   };
 }
 
+function getTaskImageSummary() {
+  const file = taskImageInput?.files?.[0];
+  const fileCount = taskImageInput?.files?.length || 0;
+  const pastedCount = pastedImageState.length;
+
+  if (!file && !pastedCount) {
+    return '';
+  }
+
+  const parts = [];
+
+  if (file) {
+    const sizeKb = Math.max(1, Math.round(file.size / 1024));
+    parts.push(fileCount > 1 ? `${fileCount} files` : `${file.name} (${sizeKb} KB)`);
+  }
+
+  if (pastedCount) {
+    parts.push(t('task.pastedImages', '{count} pasted image(s)', { count: pastedCount }));
+  }
+
+  return parts.join(' + ');
+}
+
+function updateTaskImageMeta() {
+  if (!taskImageMeta) {
+    return;
+  }
+
+  const summary = getTaskImageSummary();
+  taskImageMeta.textContent = summary
+    ? t('task.imageSelected', 'Attached: {file}', { file: summary })
+    : t('task.imageHint', 'Optional. OCR/vision will be added later.');
+}
+
+function ensurePastedImageTray() {
+  let tray = document.querySelector('#pastedImageTray');
+
+  if (!tray && taskText) {
+    tray = document.createElement('div');
+    tray.id = 'pastedImageTray';
+    tray.className = 'paste-preview-tray';
+    tray.hidden = true;
+    taskText.insertAdjacentElement('afterend', tray);
+  }
+
+  return tray;
+}
+
+function renderPastedImages() {
+  const tray = ensurePastedImageTray();
+
+  if (!tray) {
+    return;
+  }
+
+  tray.hidden = !pastedImageState.length;
+  tray.innerHTML = pastedImageState
+    .map((item, index) => `
+      <span class="paste-preview-item">
+        <img src="${escapeHtml(item.url)}" alt="">
+        <span>${escapeHtml(item.name)}</span>
+        <button type="button" data-paste-remove="${index}" aria-label="Remove pasted image">×</button>
+      </span>
+    `)
+    .join('');
+
+  for (const button of tray.querySelectorAll('[data-paste-remove]')) {
+    button.addEventListener('click', () => {
+      const index = Number(button.dataset.pasteRemove);
+      const [removed] = pastedImageState.splice(index, 1);
+      if (removed?.url) {
+        URL.revokeObjectURL(removed.url);
+      }
+      renderPastedImages();
+      updateTaskImageMeta();
+    });
+  }
+}
+
+function handleTaskPaste(event) {
+  const items = Array.from(event.clipboardData?.items || []);
+  const imageItems = items.filter((item) => item.type.startsWith('image/'));
+
+  if (!imageItems.length) {
+    return;
+  }
+
+  event.preventDefault();
+
+  for (const item of imageItems) {
+    const file = item.getAsFile();
+
+    if (!file) {
+      continue;
+    }
+
+    pastedImageState.push({
+      file,
+      name: file.name || `pasted-image-${pastedImageState.length + 1}.png`,
+      url: URL.createObjectURL(file),
+    });
+  }
+
+  renderPastedImages();
+  updateTaskImageMeta();
+}
+
+function handleGlobalTaskPaste(event) {
+  if (event.defaultPrevented || document.body.dataset.page !== 'run') {
+    return;
+  }
+
+  const activeElement = document.activeElement;
+  const activeTag = activeElement?.tagName?.toLowerCase();
+  const isTypingElsewhere =
+    activeElement &&
+    activeElement !== document.body &&
+    activeElement !== taskText &&
+    activeElement !== aiRequest &&
+    (activeTag === 'input' || activeTag === 'textarea' || activeElement.isContentEditable);
+
+  if (isTypingElsewhere) {
+    return;
+  }
+
+  handleTaskPaste(event);
+
+  if (event.defaultPrevented) {
+    taskText?.focus();
+  }
+}
+
+function buildWorkspacePrompt() {
+  const sections = [];
+  const taskDetail = taskText?.value?.trim();
+  const freeRequest = aiRequest?.value?.trim();
+  const contextDetail = sourceContext?.value?.trim();
+  const selectedTarget = getSelectedTarget();
+  const imageSummary = getTaskImageSummary();
+
+  if (taskDetail) {
+    sections.push(`Task source: ${selectedOptionText(taskSource) || 'Manual note'}\n${taskDetail}`);
+  }
+
+  if (contextDetail || selectedTarget?.localPath || selectedTarget?.type) {
+    sections.push([
+      'Source/context hint:',
+      contextDetail || '',
+      selectedTarget?.type ? `Selected target type: ${selectedTarget.type}` : '',
+      selectedTarget?.localPath ? `Selected local path: ${selectedTarget.localPath}` : '',
+      selectedTarget?.url ? `Selected target URL: ${selectedTarget.url}` : '',
+    ].filter(Boolean).join('\n'));
+  }
+
+  if (imageSummary) {
+    sections.push([
+      `Attached screenshot note: ${imageSummary}`,
+      'The current MVP stores pasted/attached screenshots as task evidence. Use the pasted text as source of truth and create cases that mention screenshots as review context.',
+    ].join('\n'));
+  }
+
+  if (freeRequest) {
+    sections.push(`Tester request:\n${freeRequest}`);
+  }
+
+  return sections.join('\n\n') || freeRequest || taskDetail || '';
+}
+
 function updateAuthFields() {
   authFields.hidden = authMode.value !== 'password';
   updateSelectionSummary();
@@ -720,6 +916,126 @@ function setSelectionPopover(open) {
   selectionBackdrop.hidden = !open;
   selectionToggle.setAttribute('aria-expanded', String(open));
   document.body.classList.toggle('modal-open', open);
+}
+
+function inferProjectNameFromUrl(value) {
+  try {
+    const hostname = new URL(value).hostname.replace(/^www\./, '');
+    const [name] = hostname.split('.');
+    return name
+      ? name
+          .split(/[-_]/)
+          .filter(Boolean)
+          .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+          .join(' ')
+      : '';
+  } catch {
+    return '';
+  }
+}
+
+function updateProjectCreateTargetFields() {
+  if (!projectCreateTargetType) {
+    return;
+  }
+
+  const wantsTarget = projectCreateWithTarget.checked;
+  const isSourceCode = projectCreateTargetType.value === 'source-code';
+  projectCreateTargetUrlField.hidden = !wantsTarget || isSourceCode;
+  projectCreateTargetPathField.hidden = !wantsTarget || !isSourceCode;
+  projectCreateTargetName.disabled = !wantsTarget;
+  projectCreateTargetType.disabled = !wantsTarget;
+  projectCreateTargetUrl.disabled = !wantsTarget;
+  projectCreateTargetPath.disabled = !wantsTarget;
+  projectCreateTargetUrl.required = wantsTarget && !isSourceCode;
+  projectCreateTargetPath.required = wantsTarget && isSourceCode;
+}
+
+function setProjectCreateOpen(open) {
+  if (!projectCreateOverlay) {
+    return;
+  }
+
+  projectCreateOverlay.hidden = !open;
+  document.body.classList.toggle('modal-open', open);
+
+  if (open) {
+    projectCreatePrompt.focus();
+  }
+}
+
+function openProjectCreateDialog() {
+  const currentUrl = siteUrl.value || projectCreateBaseUrl?.value || 'https://example.com/';
+  const inferredName = inferProjectNameFromUrl(currentUrl) || t('sidebar.newProject', 'New project');
+  const existingContext = [taskText?.value, aiRequest?.value].map((value) => value?.trim()).find(Boolean) || '';
+
+  projectCreatePrompt.value = existingContext;
+  projectCreateName.value = inferredName;
+  projectCreateEnvironment.value = projectCreateEnvironment.value || 'production';
+  projectCreateBaseUrl.value = currentUrl;
+  projectCreateDescription.value = existingContext;
+  projectCreateWithTarget.checked = true;
+  projectCreateTargetName.value = t('projectQuick.defaultTarget', 'Primary website');
+  projectCreateTargetType.value = 'web-url';
+  projectCreateTargetUrl.value = currentUrl;
+  projectCreateTargetPath.value = '';
+  updateProjectCreateTargetFields();
+  setProjectCreateOpen(true);
+}
+
+async function createProjectFromDialog(event) {
+  event.preventDefault();
+
+  projectCreateSubmitButton.disabled = true;
+  setStatus(t('projectQuick.creating', 'Creating project'), 'busy');
+
+  try {
+    const project = await requestJson('/api/projects', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: projectCreateName.value.trim(),
+        description: projectCreateDescription.value.trim() || projectCreatePrompt.value.trim(),
+        baseUrl: projectCreateBaseUrl.value,
+        environment: projectCreateEnvironment.value,
+      }),
+    });
+
+    let createdTarget = null;
+
+    if (projectCreateWithTarget.checked) {
+      const type = projectCreateTargetType.value;
+      createdTarget = await requestJson('/api/test-targets', {
+        method: 'POST',
+        body: JSON.stringify({
+          projectId: project.id,
+          name: projectCreateTargetName.value.trim() || t('projectQuick.defaultTarget', 'Primary website'),
+          type,
+          url: type === 'source-code' ? '' : projectCreateTargetUrl.value || projectCreateBaseUrl.value,
+          localPath: type === 'source-code' ? projectCreateTargetPath.value : '',
+          config: targetConfigTemplate(type),
+          enabled: true,
+        }),
+      });
+    }
+
+    await loadProjects();
+    selectProject(project.id);
+    if (createdTarget) {
+      await loadTargets(project.id);
+      selectTarget(createdTarget.id);
+    }
+    await loadSidebarSuites();
+    await loadRuns();
+    setProjectCreateOpen(false);
+    showPage('run');
+    setStatus(t('projects.saved', 'Project saved'), 'passed');
+  } catch (error) {
+    generatedCode.value = error.message;
+    setStatus(t('common.error', 'Error'), 'failed');
+    setStatusDetail(compactErrorText(error.message));
+  } finally {
+    projectCreateSubmitButton.disabled = false;
+  }
 }
 
 function getSelectedProject() {
@@ -1318,26 +1634,7 @@ async function openWorkspaceItem(projectIdValue, suiteIdValue) {
 }
 
 async function createSidebarProject() {
-  const name = window.prompt(t('sidebar.projectNamePrompt', 'Project name?'), t('sidebar.newProject', 'New project'));
-
-  if (!name?.trim()) {
-    return;
-  }
-
-  const project = await requestJson('/api/projects', {
-    method: 'POST',
-    body: JSON.stringify({
-      name: name.trim(),
-      description: '',
-      baseUrl: siteUrl.value || 'https://example.com/',
-      environment: 'production',
-    }),
-  });
-
-  await loadProjects();
-  selectProject(project.id);
-  showPage('run');
-  setStatus(t('projects.saved', 'Project saved'), 'passed');
+  openProjectCreateDialog();
 }
 
 async function createSidebarSuite(projectIdValue = projectState.selectedId) {
@@ -2317,6 +2614,19 @@ function renderPlanLoading(title, detail) {
   generatedPlan.classList.add('is-empty', 'is-loading');
 }
 
+function renderFlowError(error) {
+  const message = compactErrorText(error?.message || String(error || '')) || t('common.error', 'Error');
+  generatedPlan.innerHTML = `
+    <div class="space-empty error-empty" aria-live="polite">
+      <strong>${escapeHtml(t('detail.errorReason', 'Error reason'))}</strong>
+      <span>${escapeHtml(message)}</span>
+    </div>
+  `;
+  generatedPlan.classList.add('is-empty');
+  generatedPlan.classList.remove('is-loading');
+  setStatusDetail(message);
+}
+
 function renderAiExplanation(value = '') {
   const text = typeof value === 'string' ? value.trim() : '';
 
@@ -2465,7 +2775,7 @@ async function generateCaseFile() {
         projectId: projectState.selectedId,
         suiteId: suiteState.selectedId,
         targetId: targetState.selectedId,
-        userRequest: aiRequest.value,
+        userRequest: buildWorkspacePrompt(),
         auth: collectAuth(),
       }),
     });
@@ -2480,7 +2790,7 @@ async function generateCaseFile() {
     await loadRuns();
   } catch (error) {
     generatedCode.value = error.message;
-    renderGeneratedPlan([]);
+    renderFlowError(error);
     setStatus(t('common.error', 'Error'), 'failed');
   } finally {
     updateRunWelcomeState(false);
@@ -2559,7 +2869,7 @@ async function runImportedCaseFile() {
     setProgress('store', 100);
   } catch (error) {
     generatedCode.value = error.message;
-    renderGeneratedPlan([]);
+    renderFlowError(error);
     setStatus(t('common.error', 'Error'), 'failed');
   } finally {
     updateRunWelcomeState(false);
@@ -2779,7 +3089,7 @@ async function generateOnly() {
         projectId: projectState.selectedId,
         suiteId: suiteState.selectedId,
         targetId: targetState.selectedId,
-        userRequest: aiRequest.value,
+        userRequest: buildWorkspacePrompt(),
         auth: collectAuth(),
       }),
     });
@@ -2795,7 +3105,7 @@ async function generateOnly() {
   } catch (error) {
     generatedCode.value = error.message;
     renderAiExplanation('');
-    renderGeneratedPlan([]);
+    renderFlowError(error);
     setStatus(t('common.error', 'Error'), 'failed');
   } finally {
     setBusy(false, systemStatus.textContent);
@@ -2825,7 +3135,7 @@ async function runTest() {
         projectId: projectState.selectedId,
         suiteId: suiteState.selectedId,
         targetId: targetState.selectedId,
-        userRequest: aiRequest.value,
+        userRequest: buildWorkspacePrompt(),
         auth: collectAuth(),
       }),
     });
@@ -2847,7 +3157,7 @@ async function runTest() {
   } catch (error) {
     generatedCode.value = error.message;
     renderAiExplanation('');
-    renderGeneratedPlan([]);
+    renderFlowError(error);
     setStatus(t('common.error', 'Error'), 'failed');
   } finally {
     setBusy(false, systemStatus.textContent);
@@ -2957,24 +3267,7 @@ caseSearch.addEventListener('input', () => {
   caseState.query = caseSearch.value.trim();
   renderCases();
 });
-newProjectButton.addEventListener('click', () => {
-  projectState.selectedId = '';
-  suiteState.selectedId = '';
-  suiteState.suites = [];
-  caseState.selectedId = '';
-  caseState.cases = [];
-  targetState.selectedId = '';
-  targetState.targets = [];
-  projectSelect.value = '';
-  projectSelectedMeta.textContent = t('common.manualUrl', 'Manual URL');
-  resetProjectForm();
-  resetSuiteForm();
-  resetCaseForm();
-  resetTargetForm();
-  renderTargets();
-  renderSuites();
-  renderCases();
-});
+newProjectButton.addEventListener('click', openProjectCreateDialog);
 deleteProjectButton.addEventListener('click', deleteSelectedProject);
 newTargetButton.addEventListener('click', () => {
   targetState.selectedId = '';
@@ -3008,6 +3301,21 @@ newCaseButton.addEventListener('click', () => {
 deleteCaseButton.addEventListener('click', deleteSelectedCase);
 newSidebarProjectButton?.addEventListener('click', createSidebarProject);
 newSidebarItemButton?.addEventListener('click', () => createSidebarSuite(projectState.selectedId));
+projectCreateForm?.addEventListener('submit', createProjectFromDialog);
+projectCreateCloseButton?.addEventListener('click', () => setProjectCreateOpen(false));
+projectCreateCancelButton?.addEventListener('click', () => setProjectCreateOpen(false));
+projectCreateOverlay?.addEventListener('click', (event) => {
+  if (event.target === projectCreateOverlay) {
+    setProjectCreateOpen(false);
+  }
+});
+projectCreateTargetType?.addEventListener('change', updateProjectCreateTargetFields);
+projectCreateWithTarget?.addEventListener('change', updateProjectCreateTargetFields);
+projectCreateBaseUrl?.addEventListener('input', () => {
+  if (!projectCreateTargetUrl.value || projectCreateTargetUrl.value === siteUrl.value) {
+    projectCreateTargetUrl.value = projectCreateBaseUrl.value;
+  }
+});
 projectSelect.addEventListener('change', () => selectProject(projectSelect.value));
 suiteSelect.addEventListener('change', () => selectSuite(suiteSelect.value));
 targetSelect.addEventListener('change', () => selectTarget(targetSelect.value));
@@ -3048,6 +3356,10 @@ document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && actionMenu.open) {
     actionMenu.open = false;
   }
+
+  if (event.key === 'Escape' && projectCreateOverlay && !projectCreateOverlay.hidden) {
+    setProjectCreateOpen(false);
+  }
 });
 targetType.addEventListener('change', updateTargetTypeFields);
 targetConfigTemplateButton.addEventListener('click', fillTargetConfigTemplate);
@@ -3063,6 +3375,10 @@ suiteTypeMenu.addEventListener('click', (event) => {
 });
 suiteType.addEventListener('change', () => setSuiteType(suiteType.value));
 authMode.addEventListener('change', updateAuthFields);
+taskImageInput?.addEventListener('change', updateTaskImageMeta);
+taskText?.addEventListener('paste', handleTaskPaste);
+aiRequest?.addEventListener('paste', handleTaskPaste);
+document.addEventListener('paste', handleGlobalTaskPaste);
 for (const element of [projectSelectedMeta, suiteSelectedMeta, targetSelectedMeta]) {
   new MutationObserver(updateSelectionSummary).observe(element, {
     characterData: true,
@@ -3161,6 +3477,7 @@ async function initApp() {
   setRunMode('file');
   toggleCaseDetail(false);
   updateRunWelcomeState(false);
+  updateTaskImageMeta();
   await Promise.all([loadProjects(), loadRuns()]);
   updateSelectionSummary();
 }

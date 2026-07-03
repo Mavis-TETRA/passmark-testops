@@ -6,7 +6,7 @@
     <title>Passmark AI Test Console</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
-    <link rel="stylesheet" href="/app.css?v=workspace-tree">
+    <link rel="stylesheet" href="/app.css?v=home-composer-v4">
   </head>
   <body>
     <main class="shell">
@@ -23,22 +23,21 @@
             <span>01</span>
             <strong data-i18n="nav.runCenter">Run Center</strong>
           </a>
-          <a href="#projects" data-page-link="projects">
-            <span>02</span>
-            <strong data-i18n="nav.projects">Projects</strong>
-          </a>
           <a href="#suites" data-page-link="suites">
-            <span>03</span>
+            <span>02</span>
             <strong data-i18n="suite.testSuites">Test Suites</strong>
           </a>
           <a href="#reports" data-page-link="reports">
-            <span>04</span>
+            <span>03</span>
             <strong data-i18n="nav.reports">Reports</strong>
           </a>
         </nav>
         <section class="sidebar-projects">
           <div class="sidebar-project-heading">
             <p data-i18n="nav.projects">Projects</p>
+            <button type="button" id="newSidebarProjectButton" class="sidebar-add-project" data-i18n-title="projects.new" title="New project">
+              <span aria-hidden="true">+</span>
+            </button>
           </div>
           <div class="sidebar-project-list" id="sidebarProjectList">
             <span>No projects yet</span>
@@ -46,11 +45,11 @@
         </section>
         <nav class="sidebar-nav sidebar-bottom-nav" aria-label="Workspace secondary">
           <a href="#settings" data-page-link="settings">
-            <span>05</span>
+            <span>04</span>
             <strong data-i18n="nav.settings">Settings</strong>
           </a>
           <a href="#docs" data-page-link="docs">
-            <span>06</span>
+            <span>05</span>
             <strong data-i18n="nav.docs">Docs</strong>
           </a>
         </nav>
@@ -71,7 +70,7 @@
         <img class="decor decor-coral" src="/decor-sparkle-coral.svg" alt="" aria-hidden="true">
         <img class="decor decor-mint" src="/decor-sparkle-mint.svg" alt="" aria-hidden="true">
         <img class="decor decor-squiggle" src="/decor-squiggle-mint.svg" alt="" aria-hidden="true">
-        <section class="panel project-panel" data-page-section="projects suites">
+        <section class="panel project-panel" data-page-section="suites">
           <div class="panel-heading">
             <div>
               <p class="eyebrow" data-i18n="projects.eyebrow">Project Management</p>
@@ -368,6 +367,60 @@
           <p data-i18n="run.welcomeText">Describe the product, page, or risk area. Passmark will create a QC-ready testcase file first.</p>
         </section>
 
+        <section class="task-workspace" data-page-section="run" aria-label="Task intake">
+          <div class="workspace-steps" aria-label="Workflow">
+            <span class="active" data-i18n="workspace.stepTask">Task</span>
+            <span data-i18n="workspace.stepCase">Testcase</span>
+            <span data-i18n="workspace.stepRun">Run</span>
+            <span data-i18n="workspace.stepResult">Result</span>
+          </div>
+          <div class="task-intake-grid">
+            <article class="task-intake-card">
+              <div class="task-card-heading">
+                <span class="task-icon task-icon-message" aria-hidden="true"></span>
+                <div>
+                  <strong data-i18n="task.title">Task intake</strong>
+                  <small data-i18n="task.subtitle">Paste a Jira note, chat request, or bug description.</small>
+                </div>
+              </div>
+              <label class="compact-field" for="taskSource">
+                <span data-i18n="task.source">Task source</span>
+                <select id="taskSource">
+                  <option value="manual" data-i18n="task.sourceManual">Manual note</option>
+                  <option value="jira" data-i18n="task.sourceJira">Jira screenshot/note</option>
+                  <option value="chat" data-i18n="task.sourceChat">Chat message</option>
+                  <option value="bug" data-i18n="task.sourceBug">Bug report</option>
+                </select>
+              </label>
+              <label class="compact-field" for="taskText">
+                <span data-i18n="task.detail">Task detail</span>
+                <textarea id="taskText" class="task-textarea" data-i18n-placeholder="task.placeholder" placeholder="Paste the task, acceptance criteria, or message here."></textarea>
+              </label>
+            </article>
+            <article class="task-intake-card">
+              <div class="task-card-heading">
+                <span class="task-icon task-icon-context" aria-hidden="true"></span>
+                <div>
+                  <strong data-i18n="context.title">Source context</strong>
+                  <small data-i18n="context.subtitle">Help AI connect the task to nearby code or API areas.</small>
+                </div>
+              </div>
+              <label class="compact-field" for="sourceContext">
+                <span data-i18n="context.notes">Relevant route, component, API, or file path</span>
+                <textarea id="sourceContext" class="task-textarea small" data-i18n-placeholder="context.placeholder" placeholder="Example: /orders/orders_list, src/pages/orders, GET /api/orders"></textarea>
+              </label>
+              <label class="task-upload" for="taskImageInput">
+                <span class="task-icon task-icon-image" aria-hidden="true"></span>
+                <span>
+                  <strong data-i18n="task.image">Attach screenshot note</strong>
+                  <small id="taskImageMeta" data-i18n="task.imageHint">Optional. OCR/vision will be added later.</small>
+                </span>
+                <input id="taskImageInput" type="file" accept="image/*">
+              </label>
+            </article>
+          </div>
+        </section>
+
         <form class="control-panel simple-composer" id="testForm" data-page-section="run">
           <div class="mode-switch" id="runModeSwitch" role="tablist" aria-label="Run mode">
             <button type="button" class="active" data-mode="file" data-i18n="mode.file">Tạo file testcase</button>
@@ -647,7 +700,7 @@
               </span>
               <span>
                 <small data-i18n="docs.localAi">Local AI</small>
-                <strong>Ollama qwen2.5-coder:0.5b</strong>
+                <strong>Ollama qwen2.5-coder:7b</strong>
               </span>
             </div>
           </div>
@@ -854,12 +907,12 @@ DATABASE_URL=postgresql://passmark:passmark@localhost:5432/passmark
 LOCAL_AI_PROVIDER=ollama
 LOCAL_AI_BASE_URL=http://localhost:11434
 LOCAL_AI_API_KEY=ollama
-LOCAL_AI_MODEL=qwen2.5-coder:0.5b
+LOCAL_AI_MODEL=qwen2.5-coder:7b
 LOCAL_AI_MAX_TOKENS=1536
-LOCAL_AI_CONTEXT_TOKENS=2048
+LOCAL_AI_CONTEXT_TOKENS=4096
 LOCAL_AI_NUM_THREAD=2
 LOCAL_AI_KEEP_ALIVE=2m</pre>
-              <p><code>LOCAL_AI_BASE_URL</code> <span data-i18n="docs.aiBaseNote">tro ve Ollama local</span>; <span data-i18n="docs.aiBaseNoteSuffix">backend goi native</span> <code>/api/chat</code> <span data-i18n="docs.aiBaseResourceNote">va gioi han tai nguyen bang model nho, context thap, 1 model loaded.</span></p>
+              <p><code>LOCAL_AI_BASE_URL</code> <span data-i18n="docs.aiBaseNote">tro ve Ollama local</span>; <span data-i18n="docs.aiBaseNoteSuffix">backend goi native</span> <code>/api/chat</code> <span data-i18n="docs.aiBaseResourceNote">va gioi han tai nguyen bang model 7B, context vua phai, 1 model loaded.</span></p>
             </section>
 
             <section id="docs-rules" class="docs-section">
@@ -912,6 +965,89 @@ LOCAL_AI_KEEP_ALIVE=2m</pre>
       </section>
     </main>
 
+    <div class="project-create-overlay" id="projectCreateOverlay" hidden>
+      <section class="project-create-modal" role="dialog" aria-modal="true" aria-labelledby="projectCreateTitle">
+        <form id="projectCreateForm" class="project-create-form">
+          <div class="project-create-heading">
+            <p class="eyebrow" data-i18n="projectQuick.eyebrow">New workspace</p>
+            <h2 id="projectCreateTitle" data-i18n="projectQuick.title">What should we test?</h2>
+            <button type="button" class="secondary icon-button project-create-close" id="projectCreateCloseButton" aria-label="Close">×</button>
+          </div>
+
+          <textarea
+            id="projectCreatePrompt"
+            class="project-create-prompt"
+            data-i18n-placeholder="projectQuick.promptPlaceholder"
+            placeholder="Describe the product, task, or risk area..."
+          ></textarea>
+
+          <div class="project-create-toolbar">
+            <label>
+              <span data-i18n="projects.name">Project name</span>
+              <input id="projectCreateName" type="text" placeholder="Main Website QA" required>
+            </label>
+            <label>
+              <span data-i18n="projects.environment">Environment</span>
+              <select id="projectCreateEnvironment">
+                <option value="dev">Dev</option>
+                <option value="staging">Staging</option>
+                <option value="production" selected>Production</option>
+              </select>
+            </label>
+            <label>
+              <span data-i18n="projects.baseUrl">Base URL</span>
+              <input id="projectCreateBaseUrl" type="url" placeholder="https://example.com/" required>
+            </label>
+          </div>
+
+          <details class="project-create-options" open>
+            <summary>
+              <span data-i18n="projectQuick.options">Project setup</span>
+            </summary>
+            <div class="project-create-option-grid">
+              <label class="full-field">
+                <span data-i18n="projects.description">Description</span>
+                <textarea id="projectCreateDescription" class="plain-textarea" data-i18n-placeholder="projects.descriptionPlaceholder" placeholder="Automation testing project for main website"></textarea>
+              </label>
+              <label class="toggle-field full-field">
+                <input id="projectCreateWithTarget" type="checkbox" checked>
+                <span>
+                  <strong data-i18n="projectQuick.createTarget">Create first target</strong>
+                  <small data-i18n="projectQuick.createTargetHint">Use this target immediately on the home screen.</small>
+                </span>
+              </label>
+              <label>
+                <span data-i18n="target.name">Target name</span>
+                <input id="projectCreateTargetName" type="text" placeholder="Production website">
+              </label>
+              <label>
+                <span data-i18n="target.type">Target type</span>
+                <select id="projectCreateTargetType">
+                  <option value="web-url" data-i18n="target.type.webUrl">Web URL</option>
+                  <option value="local-web" data-i18n="target.type.localWeb">Local web</option>
+                  <option value="source-code" data-i18n="target.type.sourceCode">Source code</option>
+                  <option value="api" data-i18n="target.type.api">API</option>
+                </select>
+              </label>
+              <label class="project-create-target-url">
+                <span data-i18n="target.url">Target URL</span>
+                <input id="projectCreateTargetUrl" type="url" placeholder="https://example.com/">
+              </label>
+              <label class="project-create-target-path">
+                <span data-i18n="target.localPath">Local path</span>
+                <input id="projectCreateTargetPath" type="text" placeholder="D:\Work\project">
+              </label>
+            </div>
+          </details>
+
+          <div class="project-create-footer">
+            <button type="button" class="secondary" id="projectCreateCancelButton" data-i18n="common.cancel">Cancel</button>
+            <button type="submit" id="projectCreateSubmitButton" data-i18n="projectQuick.create">Create project</button>
+          </div>
+        </form>
+      </section>
+    </div>
+
     <div class="detail-overlay" id="detailOverlay" hidden>
       <section class="detail-panel" role="dialog" aria-modal="true" aria-labelledby="detailTitle">
         <div class="detail-header">
@@ -939,6 +1075,6 @@ LOCAL_AI_KEEP_ALIVE=2m</pre>
       </section>
     </div>
 
-    <script src="/app.js?v=workspace-tree"></script>
+    <script src="/app.js?v=home-composer"></script>
   </body>
 </html>

@@ -22,7 +22,7 @@
 | Viết testcase nhanh nhưng vẫn đúng chuẩn QC | AI tạo file testcase theo cấu trúc Objective, Step, Expected Result, Priority, Actual Result, Pass/Fail |
 | Tester cần review trước khi chạy auto | Xuất CSV, Excel-compatible `.xls`, Word-compatible `.doc` |
 | Một project có nhiều luồng kiểm thử nhỏ | Project là nhóm lớn, Test Suite là từng item/luồng riêng giống thread |
-| Không muốn phụ thuộc API AI bên ngoài | Dùng Ollama local với model mặc định `qwen2.5-coder:0.5b` |
+| Không muốn phụ thuộc API AI bên ngoài | Dùng Ollama local với model mặc định `qwen2.5-coder:7b` |
 | Máy triển khai tài nguyên thấp | Giới hạn RAM/GPU, context, token, thread và số model loaded |
 | Cần bằng chứng khi fail | Playwright tự chụp screenshot và ghi actual result vào file kết quả |
 
@@ -133,7 +133,7 @@ flowchart TB
 Yêu cầu:
 
 - Docker Desktop đang chạy.
-- Máy còn tối thiểu khoảng 4 GB RAM trống cho service Ollama.
+- Máy còn tối thiểu khoảng 8 GB RAM trống cho service Ollama.
 
 Chạy toàn bộ hệ thống:
 
@@ -153,7 +153,7 @@ Docker Compose sẽ chạy:
 | --- | --- |
 | `postgres` | Database chính |
 | `ollama` | Local AI server |
-| `ollama-model` | Job pull model `qwen2.5-coder:0.5b`, chạy xong tự dừng |
+| `ollama-model` | Job pull model `qwen2.5-coder:7b`, chạy xong tự dừng |
 | `app` | Passmark TestOps web app |
 
 > `ollama-model` dừng sau khi pull model là bình thường. Container cần chạy liên tục là `postgres`, `ollama`, và `app`.
@@ -187,10 +187,10 @@ DATABASE_URL=postgresql://passmark:passmark@localhost:5432/passmark
 LOCAL_AI_PROVIDER=ollama
 LOCAL_AI_BASE_URL=http://localhost:11434
 LOCAL_AI_API_KEY=ollama
-LOCAL_AI_MODEL=qwen2.5-coder:0.5b
-LOCAL_AI_TIMEOUT_MS=120000
+LOCAL_AI_MODEL=qwen2.5-coder:7b
+LOCAL_AI_TIMEOUT_MS=180000
 LOCAL_AI_MAX_TOKENS=1536
-LOCAL_AI_CONTEXT_TOKENS=2048
+LOCAL_AI_CONTEXT_TOKENS=4096
 LOCAL_AI_NUM_THREAD=2
 LOCAL_AI_TEMPERATURE=0.2
 LOCAL_AI_KEEP_ALIVE=2m
@@ -209,18 +209,18 @@ Bạn không cần tự đổi giá trị này trong Compose vì đã được c
 Model mặc định:
 
 ```text
-qwen2.5-coder:0.5b
+qwen2.5-coder:7b
 ```
 
 Cấu hình tiết kiệm tài nguyên:
 
-- `LOCAL_AI_CONTEXT_TOKENS=2048`
+- `LOCAL_AI_CONTEXT_TOKENS=4096`
 - `LOCAL_AI_MAX_TOKENS=1536`
 - `LOCAL_AI_NUM_THREAD=2`
 - `LOCAL_AI_KEEP_ALIVE=2m`
 - `OLLAMA_NUM_PARALLEL=1`
 - `OLLAMA_MAX_LOADED_MODELS=1`
-- Docker `ollama` có `mem_limit: 4g`
+- Docker `ollama` có `mem_limit: 8g`
 - Docker `ollama` có `cpus: "2.0"`
 - GPU NVIDIA tắt mặc định bằng `NVIDIA_VISIBLE_DEVICES=none`
 
@@ -277,7 +277,7 @@ docker compose up -d postgres
 
 ### AI trả JSON lỗi hoặc thiếu case
 
-Hệ thống có fallback để không làm hỏng flow. Với model nhỏ như `qwen2.5-coder:0.5b`, chất lượng có thể không bằng model lớn. Có thể đổi model sau, nhưng nên cân nhắc RAM/GPU.
+Hệ thống có fallback để không làm hỏng flow. Cấu hình mặc định `qwen2.5-coder:7b` được khóa quanh ngân sách Ollama 8 GB, chỉ nạp 1 model, context vừa phải và parallel thấp để không chạy lố RAM/GPU.
 
 ## Nguyên tắc phát triển
 
