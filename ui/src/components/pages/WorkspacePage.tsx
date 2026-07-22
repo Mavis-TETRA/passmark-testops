@@ -22,13 +22,14 @@ export function WorkspacePage() {
   const {
     viewMode, currentProject, environment, getTargetUrl, testCases, testPacks, cycles,
     addCasesToPack, addGeneratedCases, createSavedPack, createTestCase, importCases,
-    archiveTestCase, startRun,
+    updateTestCase, archiveTestCase, startRun,
   } = useApp();
   const packs = useMemo(() => testPacks.filter((pack) => pack.projectId === currentProject.id && !pack.archived), [currentProject.id, testPacks]);
   const [activePackId, setActivePackId] = useState('');
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [openCase, setOpenCase] = useState<TestCase | null>(null);
+  const [editTarget, setEditTarget] = useState<TestCase | null>(null);
   const [packOpen, setPackOpen] = useState<TestPack | null>(null);
   const [activeCycle, setActiveCycle] = useState<TestCycle | null>(null);
   const [archiveTarget, setArchiveTarget] = useState<TestCase | null>(null);
@@ -112,6 +113,44 @@ export function WorkspacePage() {
       event.target.value = '';
     }
   };
+  const addCaseToPack = (pack: TestPack | undefined, testCase: TestCase) => {
+    if (!pack) return;
+    if (pack.caseIds.includes(testCase.id)) {
+      toast.info(`${testCase.code || testCase.id} is already in ${pack.name}.`);
+      return;
+    }
+    addCasesToPack(pack.id, [testCase.id]);
+    toast.success(`${testCase.code || testCase.id} added to ${pack.name}.`);
+  };
+  const duplicateCase = async (testCase: TestCase) => {
+    try {
+      const created = await createTestCase({
+        ...testCase,
+        id: undefined,
+        code: `${testCase.code || 'TC'}-COPY-${Date.now().toString().slice(-4)}`,
+        name: `${testCase.name} copy`,
+        status: 'not_run',
+        actual: '',
+        defectId: null,
+        lastRun: null,
+        duration: null,
+      }, activePack && activePack.kind !== 'all' ? activePack.id : null);
+      toast.success(`${created.code || created.id} created.`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error));
+    }
+  };
+  const confirmArchive = async () => {
+    const target = archiveTarget;
+    if (!target) return;
+    try {
+      await archiveTestCase(target.id);
+      if (openCase?.id === target.id) setOpenCase(null);
+      toast.success(`${target.code || target.id} archived.`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error));
+    }
+  };
 
   return (
     <div className="flex h-[calc(100vh_-_97px)]">
@@ -135,7 +174,7 @@ export function WorkspacePage() {
         </div>
         <div className="shrink-0 border-b border-line bg-surface px-4 py-2.5"><FilterBar filters={filters} setFilters={setFilters} quick={viewMode === 'quick'} /></div>
         {!targetUrl && <div className="flex items-center gap-2 border-b border-[rgb(var(--block))]/20 bg-[rgb(var(--block-soft))] px-4 py-2 text-xs text-ink-2"><AlertTriangleIcon className="h-4 w-4 text-[rgb(var(--block))]" />No target URL is configured for {runEnvironment}. Configure a target before running automation.</div>}
-        <div className="min-h-0 flex-1 bg-surface">{visible.length ? <TestCaseTable cases={visible} selected={selected} onToggle={toggle} onToggleAll={toggleAll} onOpen={setOpenCase} selectable={viewMode === 'qa'} /> : <EmptyState icon={SearchIcon} title={testCases.length ? 'No test cases match' : 'No test cases yet'} description={testCases.length ? 'Clear a filter or select another Test Pack.' : 'Create or import real cases to start building this workspace.'} action={testCases.length ? <Button variant="secondary" onClick={() => setFilters(EMPTY_FILTERS)}>Clear filters</Button> : viewMode === 'qa' ? <Button variant="primary" onClick={() => setCreateOpen(true)}>Create first case</Button> : undefined} />}</div>
+        <div className="min-h-0 flex-1 bg-surface">{visible.length ? <TestCaseTable cases={visible} selected={selected} onToggle={toggle} onToggleAll={toggleAll} onOpen={setOpenCase} onEdit={viewMode === 'qa' ? setEditTarget : undefined} onDuplicate={viewMode === 'qa' ? (testCase) => { void duplicateCase(testCase); } : undefined} onAddToSmoke={viewMode === 'qa' && smokePack ? (testCase) => addCaseToPack(smokePack, testCase) : undefined} onAddToRegression={viewMode === 'qa' && regressionPack ? (testCase) => addCaseToPack(regressionPack, testCase) : undefined} onArchive={viewMode === 'qa' ? setArchiveTarget : undefined} selectable={viewMode === 'qa'} /> : <EmptyState icon={SearchIcon} title={testCases.length ? 'No test cases match' : 'No test cases yet'} description={testCases.length ? 'Clear a filter or select another Test Pack.' : 'Create or import real cases to start building this workspace.'} action={testCases.length ? <Button variant="secondary" onClick={() => setFilters(EMPTY_FILTERS)}>Clear filters</Button> : viewMode === 'qa' ? <Button variant="primary" onClick={() => setCreateOpen(true)}>Create first case</Button> : undefined} />}</div>
       </div>
 
       {viewMode === 'qa' && selected.size > 0 && <div className="fixed bottom-4 left-1/2 z-30 flex max-w-[calc(100vw-2rem)] -translate-x-1/2 flex-wrap items-center gap-1 rounded-xl bg-ink px-2 py-1.5 text-canvas shadow-pop"><span className="px-2 text-xs font-medium">{selected.size} selected</span><Bulk label="Run" icon={PlayIcon} onClick={() => setRunConfirm(true)} /><Bulk label="Add to Smoke" icon={ZapIcon} onClick={() => { if (smokePack) addCasesToPack(smokePack.id, selectedCases.map((testCase) => testCase.id)); toast.success('Cases added to Smoke.'); }} /><Bulk label="Add to Regression" icon={RefreshCwIcon} onClick={() => { if (regressionPack) addCasesToPack(regressionPack.id, selectedCases.map((testCase) => testCase.id)); toast.success('Cases added to Regression.'); }} /><button onClick={() => setSelected(new Set())} aria-label="Clear selection" className="rounded p-1.5 hover:bg-white/10"><XIcon className="h-4 w-4" /></button></div>}
@@ -146,10 +185,15 @@ export function WorkspacePage() {
         return addGeneratedCases(activePack.id, count, request);
       }} />
       <CreateCaseModal open={createOpen} onClose={() => setCreateOpen(false)} onCreate={async (input) => { const created = await createTestCase(input, activePack?.id); toast.success(`${created.code || created.id} created.`); }} />
+      <EditCaseModal open={Boolean(editTarget)} testCase={editTarget} onClose={() => setEditTarget(null)} onSave={async (testCase, input) => {
+        const updated = await updateTestCase(testCase.id, input);
+        if (openCase?.id === updated.id) setOpenCase(updated);
+        toast.success(`${updated.code || updated.id} updated.`);
+      }} />
       <TestPackDrawer pack={packOpen} onClose={() => setPackOpen(null)} />
       <TestCycleDrawer open={cycleOpen} onClose={() => setCycleOpen(false)} onStart={chooseCycle} />
       <RunSummaryModal open={runConfirm} onClose={() => setRunConfirm(false)} onConfirm={queueRun} pack={activePack?.name || 'Current pack'} environment={runEnvironment} target={targetUrl} total={runCases.length} automated={automated} manual={runCases.length - automated} />
-      <ConfirmModal open={Boolean(archiveTarget)} onClose={() => setArchiveTarget(null)} onConfirm={() => { if (archiveTarget) void archiveTestCase(archiveTarget.id); setOpenCase(null); toast.success('Test case archived.'); }} title="Archive test case?" confirmLabel="Archive" destructive message="The case is removed from active packs while historical results stay available." />
+      <ConfirmModal open={Boolean(archiveTarget)} onClose={() => setArchiveTarget(null)} onConfirm={() => { void confirmArchive(); }} title="Archive test case?" confirmLabel="Archive" destructive message="The case is removed from active packs while historical results stay available." />
     </div>
   );
 }
@@ -180,6 +224,43 @@ function CreateCaseModal({ open, onClose, onCreate }: { open: boolean; onClose: 
     finally { setSaving(false); }
   };
   return <Modal open={open} onClose={onClose} title="Create test case" subtitle="Add a focused manual or automated case." footer={<><Button variant="ghost" onClick={onClose}>Cancel</Button><Button variant="primary" disabled={!name.trim() || saving} onClick={() => void submit()}>{saving ? 'Saving…' : 'Create case'}</Button></>}><div className="space-y-4 p-5"><label className="block"><span className="mb-1 block text-xs font-medium text-ink-2">Case ID</span><input value={code} onChange={(event) => setCode(event.target.value.toUpperCase())} placeholder="TC-001" className="control font-mono" /></label><label className="block"><span className="mb-1 block text-xs font-medium text-ink-2">Test case name</span><input value={name} onChange={(event) => setName(event.target.value)} placeholder="Verify the primary checkout flow" className="control" /></label><label className="block"><span className="mb-1 block text-xs font-medium text-ink-2">Expected result</span><textarea value={expected} onChange={(event) => setExpected(event.target.value)} rows={3} className="w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm outline-none focus:border-accent" /></label><label className="block"><span className="mb-1 block text-xs font-medium text-ink-2">Execution mode</span><select value={automation} onChange={(event) => setAutomation(event.target.value as TestCase['automation'])} className="control"><option value="manual">Manual</option><option value="automated">Automated</option></select></label></div></Modal>;
+}
+
+function EditCaseModal({ open, testCase, onClose, onSave }: { open: boolean; testCase: TestCase | null; onClose: () => void; onSave: (testCase: TestCase, input: Partial<TestCase>) => Promise<void> }) {
+  const [code, setCode] = useState('');
+  const [name, setName] = useState('');
+  const [objective, setObjective] = useState('');
+  const [expected, setExpected] = useState('');
+  const [priority, setPriority] = useState<TestCase['priority']>('Medium');
+  const [severity, setSeverity] = useState<TestCase['severity']>('Major');
+  const [automation, setAutomation] = useState<TestCase['automation']>('manual');
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!testCase) return;
+    setCode(testCase.code || '');
+    setName(testCase.name);
+    setObjective(testCase.objective || '');
+    setExpected(testCase.expected || '');
+    setPriority(testCase.priority);
+    setSeverity(testCase.severity);
+    setAutomation(testCase.automation);
+  }, [testCase]);
+
+  const submit = async () => {
+    if (!testCase || !name.trim()) return;
+    setSaving(true);
+    try {
+      await onSave(testCase, { code: code.trim(), name: name.trim(), objective, expected, priority, severity, automation });
+      onClose();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return <Modal open={open} onClose={onClose} title="Edit test case" subtitle={testCase ? `Update ${testCase.code || testCase.id} without losing its run history.` : undefined} footer={<><Button variant="ghost" onClick={onClose}>Cancel</Button><Button variant="primary" disabled={!name.trim() || saving} onClick={() => void submit()}>{saving ? 'Saving…' : 'Save changes'}</Button></>}><div className="space-y-4 p-5"><div className="grid gap-3 sm:grid-cols-[160px_1fr]"><label className="block"><span className="mb-1 block text-xs font-medium text-ink-2">Case ID</span><input value={code} onChange={(event) => setCode(event.target.value.toUpperCase())} className="control font-mono" /></label><label className="block"><span className="mb-1 block text-xs font-medium text-ink-2">Test case name</span><input value={name} onChange={(event) => setName(event.target.value)} className="control" /></label></div><label className="block"><span className="mb-1 block text-xs font-medium text-ink-2">Objective</span><textarea value={objective} onChange={(event) => setObjective(event.target.value)} rows={2} className="w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm outline-none focus:border-accent" /></label><label className="block"><span className="mb-1 block text-xs font-medium text-ink-2">Expected result</span><textarea value={expected} onChange={(event) => setExpected(event.target.value)} rows={3} className="w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm outline-none focus:border-accent" /></label><div className="grid grid-cols-3 gap-3"><label className="block"><span className="mb-1 block text-xs font-medium text-ink-2">Priority</span><select value={priority} onChange={(event) => setPriority(event.target.value as TestCase['priority'])} className="control"><option>Critical</option><option>High</option><option>Medium</option><option>Low</option></select></label><label className="block"><span className="mb-1 block text-xs font-medium text-ink-2">Severity</span><select value={severity} onChange={(event) => setSeverity(event.target.value as TestCase['severity'])} className="control"><option>Blocker</option><option>Critical</option><option>Major</option><option>Minor</option><option>Trivial</option></select></label><label className="block"><span className="mb-1 block text-xs font-medium text-ink-2">Mode</span><select value={automation} onChange={(event) => setAutomation(event.target.value as TestCase['automation'])} className="control"><option value="manual">Manual</option><option value="automated">Automated</option></select></label></div></div></Modal>;
 }
 
 function downloadCases(cases: TestCase[]) {

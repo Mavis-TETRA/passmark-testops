@@ -56,6 +56,7 @@ interface AppState {
   addCasesToPack: (packId: string, caseIds: string[]) => void;
   addGeneratedCases: (packId: string, count: number, request?: string) => Promise<number>;
   createTestCase: (input: Partial<TestCase>, packId?: string | null) => Promise<TestCase>;
+  updateTestCase: (id: string, input: Partial<TestCase>) => Promise<TestCase>;
   importCases: (csvContent: string, fileName: string, packId: string | null) => Promise<number>;
   archiveTestCase: (id: string) => Promise<void>;
   createCycle: (cycle: Omit<TestCycle, 'id' | 'executions' | 'linkedDefects' | 'status'>) => TestCycle;
@@ -497,6 +498,29 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return mapped;
   };
 
+  const updateTestCase = async (id: string, input: Partial<TestCase>): Promise<TestCase> => {
+    const updated = await put<RawRecord>(`/api/test-cases/${encodeURIComponent(id)}`, {
+      code: input.code,
+      name: input.name,
+      description: input.objective,
+      priority: input.priority ? String(input.priority).toLowerCase() : undefined,
+      severity: input.severity ? String(input.severity).toLowerCase() : undefined,
+      testType: input.type,
+      automation: input.automation,
+      automationKind: input.automation === 'automated' ? input.automationKind || 'generic_visible_content' : input.automation === 'manual' ? 'manual' : undefined,
+      expectedResult: input.expected,
+      steps: input.steps,
+      actualResult: input.actual,
+      defectId: input.defectId,
+      assignee: input.assignee,
+      reviewer: input.reviewer,
+      notes: input.notes,
+    });
+    const mapped = mapCase(updated);
+    await refresh();
+    return mapped;
+  };
+
   const importCases = async (csvContent: string, fileName: string, packId: string | null): Promise<number> => {
     const targetId = currentProject.defaultTargetId;
     const result = await post<{ persistedCaseIds?: string[] }>('/api/testcase-files/import', {
@@ -555,7 +579,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     loading, error, refresh, projects, createProject, currentProject, setCurrentProjectId, environment, setEnvironment,
     getTarget, getTargetUrl, setLocalTargetUrl, testCases, testPacks, runs, cycles, smokeIntent, requestSmokeRun,
     clearSmokeIntent: () => setSmokeIntent(null), startRun, updateRunStatus, createSavedPack, updatePack, duplicatePack,
-    addCasesToPack, addGeneratedCases, createTestCase, importCases, archiveTestCase, createCycle, updateCycle, saveManualExecution,
+    addCasesToPack, addGeneratedCases, createTestCase, updateTestCase, importCases, archiveTestCase, createCycle, updateCycle, saveManualExecution,
     aiStatus, checkAI, testAI, unloadAI,
   };
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
