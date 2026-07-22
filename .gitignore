@@ -1,17 +1,25 @@
 
-# Dependencies
-node_modules/
+# Dependencies and package-manager caches
+/node_modules/
+.npm/
+.pnpm-store/
+.yarn/cache/
+.yarn/unplugged/
 
 # Environment files
 .env
 .env.*
 !.env.example
 
-# Build and runtime output
-dist/
-build/
-coverage/
+# Build output and tool caches
+/public/
+/dist/
+/build/
+/coverage/
+.vite/
+.cache/
 *.tsbuildinfo
+.eslintcache
 
 # Logs
 logs/
@@ -22,27 +30,35 @@ yarn-error.log*
 pnpm-debug.log*
 
 # Playwright output
-test-results/
-playwright-report/
-blob-report/
-playwright/.cache/
-playwright/.auth/
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+/playwright/.auth/
 
 # Generated test specs
-tests/generated-seo.spec.ts
+/tests/generated-*.spec.ts
+/tests/imported-testcases-*.spec.ts
 
 # Local database and runtime storage
-storage/
+/storage/
 *.db
 *.sqlite
 *.sqlite3
 
 # Docker/local machine data
-.docker/
+/.docker/
+
+# Temporary process files
+*.pid
+*.pid.lock
+*.tmp
+*.temp
 
 # OS and editor files
 .DS_Store
 Thumbs.db
+Desktop.ini
 .idea/
 .vscode/*
 !.vscode/extensions.json

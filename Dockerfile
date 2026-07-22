@@ -11,6 +11,7 @@ ENV PORT=5000
 ENV DATABASE_URL=postgresql://passmark:passmark@postgres:5432/passmark
 
 RUN npm run db:generate
+RUN npm run build
 
 EXPOSE 5000
 
