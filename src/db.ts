@@ -49,7 +49,7 @@ async function ensureDefaultEnvironmentForProject(project: { id: string; baseUrl
   });
 }
 
-export async function createDefaultTargetForProject(project: { id: string; baseUrl: string }) {
+export async function createDefaultTargetForProject(project: { id: string; baseUrl: string; environment?: string }) {
   const existingTarget = await prisma.testTarget.findFirst({
     where: {
       projectId: project.id,
@@ -69,7 +69,7 @@ export async function createDefaultTargetForProject(project: { id: string; baseU
       id: project.id === DEFAULT_PROJECT_ID ? DEFAULT_TARGET_ID : createId('target'),
       projectId: project.id,
       name: 'Default Website',
-      type: 'web-url',
+      type: project.environment === 'local' ? 'local-web' : 'web-url',
       url: project.baseUrl,
       localPath: '',
       config: '{}',
@@ -90,7 +90,8 @@ export async function ensureDefaultData() {
       for (const project of existingProjects) {
         await ensureDefaultEnvironmentForProject(project);
         await createDefaultTargetForProject(project);
-        await createDefaultSuiteForProject(project.id);
+        const suite = await createDefaultSuiteForProject(project.id);
+        await ensureDefaultWorkspaceForProject(project.id, suite.id);
       }
       return;
     }
@@ -171,6 +172,8 @@ export async function ensureDefaultData() {
         config: DEFAULT_CUSTOM_CONFIG,
       },
     });
+
+    await ensureDefaultWorkspaceForProject(project.id, suite.id);
   } catch (error) {
     logDatabaseError(error);
     throw error;
@@ -203,4 +206,44 @@ export async function createDefaultSuiteForProject(projectId: string) {
   });
 
   return suite;
+}
+
+export async function ensureDefaultWorkspaceForProject(projectId: string, _suiteId: string) {
+  const testCases = await prisma.testCase.findMany({
+    where: { enabled: true, suite: { projectId } },
+    orderBy: { createdAt: 'asc' },
+  });
+  const caseIds = testCases.map((testCase) => testCase.id);
+  const manualCaseIds = testCases.filter((testCase) => testCase.automation === 'manual').map((testCase) => testCase.id);
+  const automatedCaseIds = testCases.filter((testCase) => testCase.automation === 'automated').map((testCase) => testCase.id);
+  const enabledIds = new Set(caseIds);
+
+  const packs = [
+    { id: `${projectId}-pack-all`, name: 'All Test Cases', kind: 'all', derivedCaseIds: caseIds },
+    { id: `${projectId}-pack-smoke`, name: 'Smoke', kind: 'system' },
+    { id: `${projectId}-pack-regression`, name: 'Regression', kind: 'system' },
+    { id: `${projectId}-pack-manual`, name: 'Manual', kind: 'manual', derivedCaseIds: manualCaseIds },
+    { id: `${projectId}-pack-automated`, name: 'Automated', kind: 'automated', derivedCaseIds: automatedCaseIds },
+  ];
+
+  for (const pack of packs) {
+    const existing = await prisma.testPack.findUnique({ where: { id: pack.id } });
+    const existingIds = existing
+      ? (JSON.parse(existing.caseIds || '[]') as string[]).filter((caseId) => enabledIds.has(caseId))
+      : [];
+    const nextCaseIds = 'derivedCaseIds' in pack ? pack.derivedCaseIds : existingIds;
+    await prisma.testPack.upsert({
+      where: { id: pack.id },
+      update: { caseIds: JSON.stringify(nextCaseIds) },
+      create: {
+        id: pack.id,
+        projectId,
+        name: pack.name,
+        description: `${pack.name} pack managed by Passmark TestOps.`,
+        kind: pack.kind,
+        owner: 'Local QA Team',
+        caseIds: JSON.stringify(nextCaseIds),
+      },
+    });
+  }
 }
