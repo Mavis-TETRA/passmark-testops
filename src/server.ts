@@ -1,9 +1,11 @@
 import { execFile } from 'child_process';
+import crypto from 'crypto';
 import dotenv from 'dotenv';
 import fs from 'fs';
 import http from 'http';
 import path from 'path';
 import { promisify } from 'util';
+import { chromium, request as playwrightRequest } from '@playwright/test';
 import { AuthConfig, generatePlaywrightTest } from '../scripts/generate-playwright-test';
 import { createDefaultSuiteForProject, createDefaultTargetForProject, ensureDefaultData, ensureDefaultWorkspaceForProject, newId, prisma } from './db';
 import { askLocalAI, getConfiguredLocalAIModel, getLocalAIStatus, unloadLocalAIModel } from './local-ai-client';
@@ -154,8 +156,21 @@ type SeoAuditValues = {
   viewport: string;
 };
 
-type AuthInput = AuthConfig & {
+type AuthMode = 'none' | 'password' | 'bearer' | 'api_key' | 'basic' | 'custom_headers';
+
+type AuthInput = {
+  mode: AuthMode;
+  loginUrl?: string;
+  username?: string;
   password?: string;
+  usernameSelector?: string;
+  passwordSelector?: string;
+  submitSelector?: string;
+  successSelector?: string;
+  secret?: string;
+  apiKeyName?: string;
+  apiKeyLocation?: 'header' | 'query';
+  headers?: Record<string, string>;
 };
 
 type RunContext = {
@@ -239,6 +254,51 @@ const port = Number(process.env.PORT || 4173);
 
 function ensureStorage() {
   fs.mkdirSync(storageDir, { recursive: true });
+}
+
+let authSecretKeyCache: Buffer | null = null;
+
+function authSecretKey(): Buffer {
+  if (authSecretKeyCache) return authSecretKeyCache;
+  const configured = process.env.PASSMARK_SECRET_KEY?.trim();
+  if (configured) {
+    authSecretKeyCache = crypto.createHash('sha256').update(configured).digest();
+    return authSecretKeyCache;
+  }
+
+  ensureStorage();
+  const keyPath = path.join(storageDir, 'passmark-secret.key');
+  if (fs.existsSync(keyPath)) {
+    authSecretKeyCache = Buffer.from(fs.readFileSync(keyPath, 'utf8').trim(), 'base64');
+  } else {
+    authSecretKeyCache = crypto.randomBytes(32);
+    fs.writeFileSync(keyPath, authSecretKeyCache.toString('base64'), { encoding: 'utf8', mode: 0o600 });
+  }
+  if (authSecretKeyCache.length !== 32) throw new Error('Passmark secret key must resolve to 32 bytes.');
+  return authSecretKeyCache;
+}
+
+function encryptSecret(value: string): string {
+  if (!value) return '';
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', authSecretKey(), iv);
+  const encrypted = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `enc:v1:${iv.toString('base64')}:${tag.toString('base64')}:${encrypted.toString('base64')}`;
+}
+
+function decryptSecret(value: unknown): string {
+  const text = typeof value === 'string' ? value : '';
+  if (!text) return '';
+  if (!text.startsWith('enc:v1:')) return text;
+  try {
+    const [, , iv, tag, encrypted] = text.split(':');
+    const decipher = crypto.createDecipheriv('aes-256-gcm', authSecretKey(), Buffer.from(iv, 'base64'));
+    decipher.setAuthTag(Buffer.from(tag, 'base64'));
+    return Buffer.concat([decipher.update(Buffer.from(encrypted, 'base64')), decipher.final()]).toString('utf8');
+  } catch {
+    throw new Error('Stored authentication secret could not be decrypted. Check PASSMARK_SECRET_KEY.');
+  }
 }
 
 function toRunSummary(run: TestRun): TestRunSummary {
@@ -1168,27 +1228,130 @@ async function addCaseIdsToPack(packId: unknown, caseIds: string[]) {
   await prisma.testPack.update({ where: { id }, data: { caseIds: JSON.stringify(merged) } });
 }
 
+function normalizeAuthMode(value: unknown): AuthMode {
+  const mode = String(value || '').toLowerCase();
+  if (mode === 'form' || mode === 'password') return 'password';
+  if (mode === 'bearer' || mode === 'api_key' || mode === 'basic' || mode === 'custom_headers') return mode;
+  return 'none';
+}
+
+function normalizeHeaderRecord(value: unknown): Record<string, string> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const headers: Record<string, string> = {};
+  for (const [rawName, rawValue] of Object.entries(value as Record<string, unknown>)) {
+    const name = rawName.trim();
+    const headerValue = typeof rawValue === 'string' ? rawValue.trim() : '';
+    if (!name || !headerValue || /[\r\n]/.test(name) || /[\r\n]/.test(headerValue)) continue;
+    headers[name] = headerValue;
+  }
+  return headers;
+}
+
 function normalizeAuth(value: unknown): AuthInput {
-  if (!value || typeof value !== 'object') {
-    return { mode: 'none' };
-  }
-
+  if (!value || typeof value !== 'object') return { mode: 'none' };
   const auth = value as Record<string, unknown>;
-  const mode = auth.mode === 'password' ? 'password' : 'none';
-
-  if (mode === 'none') {
-    return { mode };
-  }
-
+  const mode = normalizeAuthMode(auth.mode || auth.authType);
+  const secret = typeof auth.secret === 'string' ? auth.secret : typeof auth.password === 'string' ? auth.password : '';
   return {
     mode,
     loginUrl: typeof auth.loginUrl === 'string' ? auth.loginUrl.trim() : '',
     username: typeof auth.username === 'string' ? auth.username.trim() : '',
-    password: typeof auth.password === 'string' ? auth.password : '',
+    password: mode === 'password' ? secret : '',
+    secret,
     usernameSelector: typeof auth.usernameSelector === 'string' ? auth.usernameSelector.trim() : '',
     passwordSelector: typeof auth.passwordSelector === 'string' ? auth.passwordSelector.trim() : '',
     submitSelector: typeof auth.submitSelector === 'string' ? auth.submitSelector.trim() : '',
     successSelector: typeof auth.successSelector === 'string' ? auth.successSelector.trim() : '',
+    apiKeyName: typeof auth.apiKeyName === 'string' ? auth.apiKeyName.trim() : '',
+    apiKeyLocation: auth.apiKeyLocation === 'query' ? 'query' : 'header',
+    headers: normalizeHeaderRecord(auth.headers || auth.customHeaders),
+  };
+}
+
+function storedEnvironmentAuth(environment: any): AuthInput {
+  if (!environment) return { mode: 'none' };
+  const config = parseJsonValue<Record<string, unknown>>(environment.authConfig, {});
+  const mode = normalizeAuthMode(environment.authType || config.mode);
+  const secret = decryptSecret(config.secret);
+  const headers = normalizeHeaderRecord(parseJsonValue<Record<string, string>>(decryptSecret(environment.customHeaders), {}));
+  return {
+    mode,
+    loginUrl: typeof config.loginUrl === 'string' ? config.loginUrl : '',
+    username: typeof config.username === 'string' ? config.username : '',
+    password: mode === 'password' ? secret : '',
+    secret,
+    usernameSelector: typeof config.usernameSelector === 'string' ? config.usernameSelector : '',
+    passwordSelector: typeof config.passwordSelector === 'string' ? config.passwordSelector : '',
+    submitSelector: typeof config.submitSelector === 'string' ? config.submitSelector : '',
+    successSelector: typeof config.successSelector === 'string' ? config.successSelector : '',
+    apiKeyName: typeof config.apiKeyName === 'string' ? config.apiKeyName : '',
+    apiKeyLocation: config.apiKeyLocation === 'query' ? 'query' : 'header',
+    headers,
+  };
+}
+
+function resolveEnvironmentAuth(environment: any, fallback: unknown): AuthInput {
+  const stored = storedEnvironmentAuth(environment);
+  const resolved = stored.mode !== 'none' || Object.keys(stored.headers || {}).length ? stored : normalizeAuth(fallback);
+  if (resolved.mode === 'password' && resolved.loginUrl && environment) {
+    resolved.loginUrl = runnerReachableUrl(resolved.loginUrl, normalizeEnvironment(environment.name));
+  }
+  return resolved;
+}
+
+function environmentToApi(environment: any): Record<string, unknown> {
+  const config = parseJsonValue<Record<string, unknown>>(environment.authConfig, {});
+  const mode = normalizeAuthMode(environment.authType || config.mode);
+  let headerNames: string[] = [];
+  try {
+    headerNames = Object.keys(normalizeHeaderRecord(parseJsonValue<Record<string, string>>(decryptSecret(environment.customHeaders), {})));
+  } catch {
+    headerNames = [];
+  }
+  return {
+    id: environment.id,
+    projectId: environment.projectId,
+    name: environment.name,
+    baseUrl: environment.baseUrl,
+    createdAt: environment.createdAt,
+    updatedAt: environment.updatedAt,
+    auth: {
+      mode: mode === 'password' ? 'form' : mode,
+      loginUrl: typeof config.loginUrl === 'string' ? config.loginUrl : '',
+      username: typeof config.username === 'string' ? config.username : '',
+      usernameSelector: typeof config.usernameSelector === 'string' ? config.usernameSelector : '',
+      passwordSelector: typeof config.passwordSelector === 'string' ? config.passwordSelector : '',
+      submitSelector: typeof config.submitSelector === 'string' ? config.submitSelector : '',
+      successSelector: typeof config.successSelector === 'string' ? config.successSelector : '',
+      apiKeyName: typeof config.apiKeyName === 'string' ? config.apiKeyName : '',
+      apiKeyLocation: config.apiKeyLocation === 'query' ? 'query' : 'header',
+      secretConfigured: Boolean(config.secret),
+      customHeaderNames: headerNames,
+    },
+  };
+}
+
+function authHeaders(auth: AuthInput): Record<string, string> {
+  const headers = { ...(auth.headers || {}) };
+  if (auth.mode === 'bearer' && auth.secret) headers.Authorization = `Bearer ${auth.secret}`;
+  if (auth.mode === 'basic' && auth.username && auth.secret) headers.Authorization = `Basic ${Buffer.from(`${auth.username}:${auth.secret}`).toString('base64')}`;
+  if (auth.mode === 'api_key' && auth.apiKeyLocation !== 'query' && auth.apiKeyName && auth.secret) headers[auth.apiKeyName] = auth.secret;
+  return headers;
+}
+
+function authTargetUrl(url: string, auth: AuthInput): string {
+  if (auth.mode !== 'api_key' || auth.apiKeyLocation !== 'query' || !auth.apiKeyName || !auth.secret) return url;
+  const target = new URL(url);
+  target.searchParams.set(auth.apiKeyName, auth.secret);
+  return target.toString();
+}
+
+function authProcessEnv(auth?: AuthInput): Record<string, string> {
+  const resolved = auth || { mode: 'none' as const };
+  return {
+    PASSMARK_AUTH_PASSWORD: resolved.mode === 'password' ? resolved.secret || resolved.password || '' : '',
+    PASSMARK_AUTH_SECRET: resolved.secret || '',
+    PASSMARK_AUTH_HEADERS_B64: Buffer.from(JSON.stringify(authHeaders(resolved))).toString('base64'),
   };
 }
 
@@ -1202,7 +1365,107 @@ function authConfigForGenerator(auth?: AuthInput): AuthConfig {
   }
 
   const { password, ...safeAuth } = auth;
-  return safeAuth;
+  return {
+    mode: 'password',
+    loginUrl: safeAuth.loginUrl,
+    username: safeAuth.username,
+    usernameSelector: safeAuth.usernameSelector,
+    passwordSelector: safeAuth.passwordSelector,
+    submitSelector: safeAuth.submitSelector,
+    successSelector: safeAuth.successSelector,
+  };
+}
+
+function authFromDraft(environment: any, body: Record<string, unknown>): AuthInput {
+  const existing = storedEnvironmentAuth(environment);
+  const draft = normalizeAuth(body);
+  if (draft.mode === 'none') return { mode: 'none' };
+  const sameMode = existing.mode === draft.mode;
+  const suppliedSecret = typeof body.secret === 'string' ? body.secret : '';
+  return {
+    ...draft,
+    secret: suppliedSecret || (sameMode ? existing.secret : ''),
+    password: draft.mode === 'password' ? suppliedSecret || (sameMode ? existing.secret : '') : '',
+    headers: Object.prototype.hasOwnProperty.call(body, 'customHeaders') ? normalizeHeaderRecord(body.customHeaders) : existing.headers,
+  };
+}
+
+async function saveEnvironmentAuth(environment: any, body: Record<string, unknown>) {
+  const auth = authFromDraft(environment, body);
+  const existingConfig = parseJsonValue<Record<string, unknown>>(environment.authConfig, {});
+  const modeChanged = normalizeAuthMode(environment.authType || existingConfig.mode) !== auth.mode;
+  const suppliedSecret = typeof body.secret === 'string' ? body.secret : '';
+  const encryptedSecret = auth.mode === 'none'
+    ? ''
+    : suppliedSecret
+      ? encryptSecret(suppliedSecret)
+      : modeChanged
+        ? ''
+        : typeof existingConfig.secret === 'string' ? existingConfig.secret : '';
+  const authConfig = auth.mode === 'none' ? {} : {
+    mode: auth.mode,
+    loginUrl: auth.loginUrl || '',
+    username: auth.username || '',
+    usernameSelector: auth.usernameSelector || '',
+    passwordSelector: auth.passwordSelector || '',
+    submitSelector: auth.submitSelector || '',
+    successSelector: auth.successSelector || '',
+    apiKeyName: auth.apiKeyName || '',
+    apiKeyLocation: auth.apiKeyLocation || 'header',
+    secret: encryptedSecret,
+  };
+  const customHeaders = auth.mode === 'none'
+    ? '{}'
+    : Object.prototype.hasOwnProperty.call(body, 'customHeaders')
+      ? encryptSecret(JSON.stringify(normalizeHeaderRecord(body.customHeaders)))
+      : environment.customHeaders;
+  return prisma.environment.update({
+    where: { id: environment.id },
+    data: {
+      authType: auth.mode === 'password' ? 'form' : auth.mode,
+      authConfig: JSON.stringify(authConfig),
+      customHeaders,
+    },
+  });
+}
+
+async function testEnvironmentAuthentication(environment: any, body: Record<string, unknown>) {
+  const auth = Object.keys(body).length ? authFromDraft(environment, body) : storedEnvironmentAuth(environment);
+  const startedAt = Date.now();
+  const displayUrl = normalizeUrl(typeof body.baseUrl === 'string' ? body.baseUrl : environment.baseUrl);
+  const targetUrl = runnerReachableUrl(displayUrl, normalizeEnvironment(environment.name));
+
+  if (auth.mode === 'password') {
+    if (!auth.loginUrl || !auth.username || !auth.secret) throw new Error('Login URL, username and password are required.');
+    const browser = await chromium.launch({ headless: true });
+    try {
+      const page = await browser.newPage();
+      await page.goto(runnerReachableUrl(auth.loginUrl, normalizeEnvironment(environment.name)), { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await page.locator(auth.usernameSelector || 'input[name="email"], input[name="username"], input[type="email"], input[type="text"]').first().fill(auth.username);
+      await page.locator(auth.passwordSelector || 'input[name="password"], input[type="password"]').first().fill(auth.secret);
+      await Promise.all([
+        page.waitForLoadState('domcontentloaded').catch(() => undefined),
+        page.locator(auth.submitSelector || 'button[type="submit"], input[type="submit"]').first().click(),
+      ]);
+      if (auth.successSelector) await page.locator(auth.successSelector).first().waitFor({ state: 'visible', timeout: 15000 });
+      else if (page.url() === auth.loginUrl) throw new Error('The page remained on the login URL. Add a success selector if the application uses a single-page login flow.');
+      return { ok: true, status: 200, durationMs: Date.now() - startedAt, message: 'Form login succeeded.' };
+    } finally {
+      await browser.close();
+    }
+  }
+
+  if (auth.mode !== 'none' && auth.mode !== 'custom_headers' && !auth.secret) throw new Error('A password, token or API key is required.');
+  const context = await playwrightRequest.newContext({ extraHTTPHeaders: authHeaders(auth) });
+  try {
+    const response = await context.get(authTargetUrl(targetUrl, auth), { failOnStatusCode: false, timeout: 30000 });
+    const status = response.status();
+    if (status === 401 || status === 403) throw new Error(`Authentication was rejected with HTTP ${status}.`);
+    if (status >= 500) throw new Error(`Target returned HTTP ${status}.`);
+    return { ok: true, status, durationMs: Date.now() - startedAt, message: `Connection succeeded with HTTP ${status}.` };
+  } finally {
+    await context.dispose();
+  }
 }
 
 function summarizeJsonReport(stdout: string): TestRun['summary'] {
@@ -1514,7 +1777,7 @@ const { chromium } = require('playwright');
       cwd: rootDir,
       env: {
         ...process.env,
-        PASSMARK_AUTH_PASSWORD: auth?.password || '',
+        ...authProcessEnv(auth),
       },
       maxBuffer: 1024 * 1024,
       timeout: 60000,
@@ -2558,9 +2821,10 @@ function buildProfessionalTestcasePrompt(
   suite?: TestSuite,
   target?: TestTarget
 ): string {
-  return `Return compact JSON only: {"n":${count},"cases":[{"t":"short unique title","e":"specific expected result","k":"automation kind","p":"high|medium|low","s":"critical|major|minor|trivial"}]}.
+  return `Return compact JSON only: {"n":${count},"cases":[{"t":"short unique title","e":"specific expected result","k":"automation kind","y":"functional|ui|api|accessibility|seo|performance|security","p":"high|medium|low","s":"critical|major|minor|trivial"}]}.
 Create exactly ${count} professional QA cases numbered conceptually ${startIndex + 1}-${startIndex + count} for ${url}.
 Allowed k: manual,page_load,page_load_performance,title_exists,selector_visible,body_text_contains,meta_description_exists,meta_description_length,canonical_exists,h1_exists,html_lang_exists,viewport_exists,link_health_basic,image_resources_ok,image_alt_text,no_console_errors,no_page_errors,form_validation,generic_visible_content.
+Use the Test type requested by the user as y for every case. Use page_load_performance for safe performance checks; never generate load or stress traffic.
 Mix positive, negative and edge coverage when relevant. No destructive, load or stress tests. Do not invent credentials. Avoid duplicate titles.
 ${existingTitles.length ? `Do not repeat these existing titles: ${existingTitles.slice(-20).join(' | ')}.` : ''}
 Suite: ${suite?.name || 'General'} (${suite?.type || target?.type || 'web'}). Request: ${userRequest.trim() || 'Create focused test cases.'}`;
@@ -2605,7 +2869,7 @@ function normalizeProfessionalRows(
       platform: testcaseText(row.platform, 'Web'),
       tools: testcaseText(row.tools, automationKind === 'manual' ? 'Manual review' : 'Playwright Chromium'),
       severity: normalizeSeverity(row.severity ?? row.s),
-      testType: normalizeTestType(row.testType),
+      testType: normalizeTestType(row.testType ?? row.y),
       automationCandidate: normalizeAutomationCandidate(row.automationCandidate, automationKind),
       automationKind,
       selector: testcaseText(row.selector),
@@ -2727,6 +2991,55 @@ async function generateProfessionalTestcaseFile(
 function renderImportedCaseBody(row: TestcaseFileRow): string {
   const selector = JSON.stringify(row.selector || 'body');
   const expectedText = JSON.stringify(row.expectedText || '');
+  const testType = normalizeTestType(row.testType);
+
+  if (testType === 'api') {
+    return `    const response = await page.request.get(AUTH_TARGET_URL, { failOnStatusCode: false, headers: AUTH_HEADERS });
+    expect(response.status(), 'Expected the API endpoint not to return a server error').toBeLessThan(500);
+    expect(response.status(), 'Expected the API endpoint to return a valid HTTP status').toBeGreaterThanOrEqual(200);
+    const responseBody = await response.body();
+    expect(responseBody.length, 'Expected the API response to contain a body').toBeGreaterThan(0);
+    const contentType = response.headers()['content-type'] || '';
+    if (contentType.includes('application/json')) {
+      expect(() => JSON.parse(responseBody.toString('utf8')), 'Expected a valid JSON response').not.toThrow();
+    }`;
+  }
+
+  if (testType === 'accessibility') {
+    return `    await openTarget(page);
+    const documentLanguage = await page.locator('html').getAttribute('lang');
+    expect(documentLanguage?.trim().length || 0, 'Expected the document to declare a language').toBeGreaterThan(0);
+    const imagesMissingAlt = await page.locator('img').evaluateAll((images) => images.filter((image) => !image.hasAttribute('alt')).length);
+    expect(imagesMissingAlt, 'Expected every image to provide an alt attribute').toBe(0);
+    const unlabeledControls = await page.locator('input:not([type="hidden"]):not([type="button"]):not([type="submit"]), select, textarea').evaluateAll((controls) => controls.filter((control) => {
+      const id = control.getAttribute('id');
+      const hasLinkedLabel = id ? Boolean(document.querySelector(\`label[for="\${CSS.escape(id)}"]\`)) : false;
+      return !hasLinkedLabel && !control.closest('label') && !control.getAttribute('aria-label') && !control.getAttribute('aria-labelledby') && !control.getAttribute('title');
+    }).length);
+    expect(unlabeledControls, 'Expected form controls to have accessible labels').toBe(0);
+    expect(await page.locator('main, [role="main"]').count(), 'Expected a main content landmark').toBeGreaterThan(0);`;
+  }
+
+  if (testType === 'performance') {
+    return `    const startedAt = Date.now();
+    const response = await openTarget(page);
+    const elapsedMs = Date.now() - startedAt;
+    expect(response, 'Expected the target to return a response').not.toBeNull();
+    expect(response?.status(), 'Expected no server error').toBeLessThan(500);
+    expect(elapsedMs, 'Expected page response within the safe 10 second threshold').toBeLessThan(10000);`;
+  }
+
+  if (testType === 'security') {
+    return `    const targetUrl = new URL(SITE_URL);
+    expect(targetUrl.protocol, 'Expected a secure HTTPS target for security checks').toBe('https:');
+    const response = await page.request.get(AUTH_TARGET_URL, { failOnStatusCode: false, headers: AUTH_HEADERS });
+    expect(response.status(), 'Expected no server error').toBeLessThan(500);
+    const headers = response.headers();
+    expect((headers['x-content-type-options'] || '').toLowerCase(), 'Expected X-Content-Type-Options: nosniff').toBe('nosniff');
+    const contentSecurityPolicy = (headers['content-security-policy'] || '').toLowerCase();
+    const frameOptions = (headers['x-frame-options'] || '').toLowerCase();
+    expect(Boolean(frameOptions || contentSecurityPolicy.includes('frame-ancestors')), 'Expected clickjacking protection through X-Frame-Options or CSP frame-ancestors').toBeTruthy();`;
+  }
 
   switch (row.automationKind) {
     case 'page_load':
@@ -2829,6 +3142,48 @@ function renderImportedCaseBody(row: TestcaseFileRow): string {
   }
 }
 
+function renderImportedAuthSetup(auth?: AuthInput): string {
+  const config = {
+    mode: auth?.mode || 'none',
+    loginUrl: auth?.loginUrl || '',
+    username: auth?.username || '',
+    usernameSelector: auth?.usernameSelector || 'input[name="email"], input[name="username"], input[type="email"], input[type="text"]',
+    passwordSelector: auth?.passwordSelector || 'input[name="password"], input[type="password"]',
+    submitSelector: auth?.submitSelector || 'button[type="submit"], input[type="submit"]',
+    successSelector: auth?.successSelector || '',
+    apiKeyName: auth?.apiKeyName || '',
+    apiKeyLocation: auth?.apiKeyLocation || 'header',
+  };
+  return `
+const AUTH_CONFIG = ${JSON.stringify(config)};
+const AUTH_SECRET = process.env.PASSMARK_AUTH_SECRET || process.env.PASSMARK_AUTH_PASSWORD || '';
+const AUTH_HEADERS = (() => {
+  try { return JSON.parse(Buffer.from(process.env.PASSMARK_AUTH_HEADERS_B64 || '', 'base64').toString('utf8') || '{}'); }
+  catch { return {}; }
+})();
+const AUTH_TARGET_URL = (() => {
+  if (AUTH_CONFIG.mode !== 'api_key' || AUTH_CONFIG.apiKeyLocation !== 'query' || !AUTH_CONFIG.apiKeyName || !AUTH_SECRET) return SITE_URL;
+  const value = new URL(SITE_URL);
+  value.searchParams.set(AUTH_CONFIG.apiKeyName, AUTH_SECRET);
+  return value.toString();
+})();
+
+test.beforeEach(async ({ page }) => {
+  if (Object.keys(AUTH_HEADERS).length) await page.setExtraHTTPHeaders(AUTH_HEADERS);
+  if (AUTH_CONFIG.mode !== 'password' || !AUTH_CONFIG.loginUrl) return;
+  await page.goto(AUTH_CONFIG.loginUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  await page.locator(AUTH_CONFIG.usernameSelector).first().fill(AUTH_CONFIG.username);
+  await page.locator(AUTH_CONFIG.passwordSelector).first().fill(AUTH_SECRET);
+  await Promise.all([
+    page.waitForLoadState('domcontentloaded').catch(() => undefined),
+    page.locator(AUTH_CONFIG.submitSelector).first().click(),
+  ]);
+  await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => undefined);
+  if (AUTH_CONFIG.successSelector) await expect(page.locator(AUTH_CONFIG.successSelector).first()).toBeVisible({ timeout: 15000 });
+});
+`;
+}
+
 function renderImportedCsvSpec(url: string, rows: TestcaseFileRow[], runId: string, auth?: AuthInput): GeneratedSpecResult {
   const testBlocks = rows.map((row, index) => {
     const caseCode = row.caseId || generatedCaseCode(index);
@@ -2851,6 +3206,7 @@ import * as path from 'path';
 const SITE_URL = ${JSON.stringify(url)};
 const EVIDENCE_DIR = ${JSON.stringify(testcaseFileDir())};
 const RUN_ID = ${JSON.stringify(runId)};
+${renderImportedAuthSetup(auth)}
 
 async function openTarget(page) {
   const response = await page.goto(SITE_URL, {
@@ -3148,7 +3504,7 @@ async function runPlaywright(
         cwd: rootDir,
         env: {
           ...process.env,
-          PASSMARK_AUTH_PASSWORD: auth?.password || '',
+          ...authProcessEnv(auth),
         },
         maxBuffer: 1024 * 1024 * 10,
         timeout: 90000,
@@ -3262,7 +3618,7 @@ async function runOnePlaywrightCase(
         cwd: rootDir,
         env: {
           ...process.env,
-          PASSMARK_AUTH_PASSWORD: auth?.password || '',
+          ...authProcessEnv(auth),
         },
         maxBuffer: 1024 * 1024 * 10,
       }
@@ -3733,10 +4089,43 @@ const server = http.createServer(async (request, response) => {
 
     if (request.method === 'GET' && requestUrl.pathname === '/api/environments') {
       const projectId = requestUrl.searchParams.get('projectId');
-      sendJson(response, 200, await prisma.environment.findMany({
+      const environments = await prisma.environment.findMany({
         where: projectId ? { projectId } : undefined,
         orderBy: { createdAt: 'asc' },
-      }));
+      });
+      sendJson(response, 200, environments.map(environmentToApi));
+      return;
+    }
+
+    const environmentAuthMatch = requestUrl.pathname.match(/^\/api\/environment-auth\/([^/]+)\/([^/]+)(\/test)?$/);
+    if (environmentAuthMatch && (request.method === 'PUT' || request.method === 'POST')) {
+      const projectId = decodeURIComponent(environmentAuthMatch[1]);
+      const environmentName = normalizeEnvironment(decodeURIComponent(environmentAuthMatch[2]));
+      const body = await readBody(request);
+      const project = await prisma.project.findUnique({ where: { id: projectId } });
+      if (!project) {
+        sendError(response, 404, 'Project not found.');
+        return;
+      }
+      const requestedBaseUrl = typeof body.baseUrl === 'string' && body.baseUrl.trim() ? normalizeUrl(body.baseUrl) : project.baseUrl;
+      let environment = await prisma.environment.findFirst({ where: { projectId, name: environmentName } });
+      if (!environment) {
+        environment = await prisma.environment.create({
+          data: {
+            id: newId('environment'), projectId, name: environmentName, baseUrl: requestedBaseUrl,
+            authType: 'none', authConfig: '{}', customHeaders: '{}',
+          },
+        });
+      } else if (environment.baseUrl !== requestedBaseUrl) {
+        environment = await prisma.environment.update({ where: { id: environment.id }, data: { baseUrl: requestedBaseUrl } });
+      }
+
+      if (environmentAuthMatch[3] === '/test') {
+        sendJson(response, 200, await testEnvironmentAuthentication(environment, body));
+      } else {
+        const saved = await saveEnvironmentAuth(environment, body);
+        sendJson(response, 200, environmentToApi(saved));
+      }
       return;
     }
 
@@ -4269,7 +4658,7 @@ const server = http.createServer(async (request, response) => {
       const url = runnerReachableUrl(displayUrl, normalizeEnvironment(runEnvironment?.name || body.environment || project?.environment));
       const csvContent = typeof body.csvContent === 'string' ? body.csvContent : '';
       const importedCases = testcaseRowsFromCsv(csvContent);
-      const auth = normalizeAuth(body.auth);
+      const auth = resolveEnvironmentAuth(runEnvironment, body.auth);
       const fileName = typeof body.fileName === 'string' ? body.fileName : 'imported-testcases.csv';
       const testcaseFile = writeTestcaseCsvFile(importedCases, 'run-source-testcases');
       const testcaseOfficeFiles = writeOfficeCompanionFiles(importedCases, 'run-source-testcases');
@@ -4315,7 +4704,7 @@ const server = http.createServer(async (request, response) => {
       const runEnvironment = await ensureRunEnvironment(project?.id, body.environment || project?.environment, displayUrl);
       const url = runnerReachableUrl(displayUrl, normalizeEnvironment(runEnvironment?.name || body.environment || project?.environment));
       const userRequest = buildSuiteUserRequest(typeof body.userRequest === 'string' ? body.userRequest : '', suite);
-      const auth = normalizeAuth(body.auth);
+      const auth = resolveEnvironmentAuth(runEnvironment, body.auth);
       const result = await generateSpecForRun(url, userRequest, auth, suite);
 
       sendJson(response, 200, {
@@ -4343,7 +4732,7 @@ const server = http.createServer(async (request, response) => {
       const runEnvironment = await ensureRunEnvironment(project?.id, body.environment || project?.environment, displayUrl);
       const url = runnerReachableUrl(displayUrl, normalizeEnvironment(runEnvironment?.name || body.environment || project?.environment));
       const userRequest = buildSuiteUserRequest(typeof body.userRequest === 'string' ? body.userRequest : '', suite);
-      const auth = normalizeAuth(body.auth);
+      const auth = resolveEnvironmentAuth(runEnvironment, body.auth);
       const job: RunQueueJob = {
         runId: newId('run'),
         url,

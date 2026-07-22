@@ -31,13 +31,18 @@ function passRate(run: TestRun) {
 }
 
 export function ReportsPage() {
-  const { currentProject, environment, runs, testCases, viewMode } = useApp();
+  const { currentProject, environment, runs, testCases, testPacks, viewMode } = useApp();
   const [range, setRange] = useState('30');
 
   const projectRuns = useMemo(() => {
     const cutoff = range === 'all' ? 0 : Date.now() - Number(range) * 86_400_000;
-    return runs.filter((run) => run.projectId === currentProject.id && (cutoff === 0 || new Date(run.startedAt).getTime() >= cutoff));
-  }, [currentProject.id, range, runs]);
+    return runs.filter((run) => run.projectId === currentProject.id && run.environment === environment && (cutoff === 0 || new Date(run.startedAt).getTime() >= cutoff));
+  }, [currentProject.id, environment, range, runs]);
+
+  const projectCases = useMemo(() => {
+    const caseIds = new Set(testPacks.filter((pack) => pack.projectId === currentProject.id).flatMap((pack) => pack.caseIds));
+    return testCases.filter((testCase) => caseIds.has(testCase.id));
+  }, [currentProject.id, testCases, testPacks]);
 
   const completedRuns = projectRuns.filter((run) => ['passed', 'failed', 'partially_completed'].includes(run.status));
   const totalPassed = completedRuns.reduce((sum, run) => sum + run.passed, 0);
@@ -47,26 +52,23 @@ export function ReportsPage() {
   const averageDuration = completedRuns.length
     ? Math.round(completedRuns.reduce((sum, run) => sum + (run.duration || 0), 0) / completedRuns.length)
     : 0;
-  const currentFailures = projectRuns.find((run) => run.environment === environment)?.failed || 0;
+  const currentFailures = [...completedRuns].sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime())[0]?.failed || 0;
 
   const trend = [...completedRuns]
     .sort((a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime())
     .slice(-12)
     .map((run) => ({ date: format(new Date(run.startedAt), 'MMM d'), rate: passRate(run), pack: run.pack }));
 
-  const environmentResults = Array.from(new Set(projectRuns.map((run) => run.environment))).map((name) => {
-    const selected = projectRuns.filter((run) => run.environment === name);
-    return {
-      env: name.replace('Development', 'Dev').replace('Production', 'Prod'),
-      passed: selected.reduce((sum, run) => sum + run.passed, 0),
-      failed: selected.reduce((sum, run) => sum + run.failed, 0),
-      skipped: selected.reduce((sum, run) => sum + run.skipped + run.blocked, 0),
-    };
-  });
+  const environmentResults = [{
+    env: environment.replace('Development', 'Dev').replace('Production', 'Prod'),
+    passed: projectRuns.reduce((sum, run) => sum + run.passed, 0),
+    failed: projectRuns.reduce((sum, run) => sum + run.failed, 0),
+    skipped: projectRuns.reduce((sum, run) => sum + run.skipped + run.blocked, 0),
+  }];
 
   const automation = [
-    { name: 'Automated', value: testCases.filter((item) => item.automation === 'automated').length, color: 'rgb(var(--accent))' },
-    { name: 'Manual', value: testCases.filter((item) => item.automation === 'manual').length, color: 'rgb(var(--block))' },
+    { name: 'Automated', value: projectCases.filter((item) => item.automation === 'automated').length, color: 'rgb(var(--accent))' },
+    { name: 'Manual', value: projectCases.filter((item) => item.automation === 'manual').length, color: 'rgb(var(--block))' },
   ];
   const caseStatus = [
     { name: 'Passed', value: totalPassed, color: 'rgb(var(--ok))' },
@@ -107,7 +109,7 @@ export function ReportsPage() {
         <div>
           <h1 className="text-xl font-semibold text-ink">Reports</h1>
           <p className="mt-0.5 text-sm text-ink-2">
-            {viewMode === 'quick' ? 'The signals a developer needs before and after a Smoke run.' : 'Live quality trends from saved Passmark runs.'}
+            {viewMode === 'quick' ? `The ${environment} signals a developer needs before and after a Smoke run.` : `Live ${environment} quality trends for ${currentProject.name}.`}
           </p>
         </div>
         <div className="ml-auto flex gap-2">
@@ -130,7 +132,7 @@ export function ReportsPage() {
       </div>
 
       {!projectRuns.length ? (
-        <EmptyState icon={ActivityIcon} title="No run data yet" description="Queue a Smoke or Regression run to build this project’s quality report." />
+        <EmptyState icon={ActivityIcon} title={`No ${environment} run data yet`} description="Queue a Smoke or Regression run, or select another environment." />
       ) : (
         <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
           <Card title="Pass-rate trend" className="lg:col-span-2">
@@ -147,7 +149,7 @@ export function ReportsPage() {
           </Card>
 
           {viewMode === 'qa' && (
-            <Card title="Results by environment">
+            <Card title={`Results in ${environment}`}>
               <ChartBox>
                 <BarChart data={environmentResults} margin={{ top: 8, right: 8, bottom: 0, left: -18 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="rgb(var(--line))" vertical={false} />

@@ -30,7 +30,8 @@ export function EnvironmentSwitcher() {
     <div
       className="inline-flex items-center gap-0.5 p-0.5 rounded-lg border border-line bg-surface-2"
       role="radiogroup"
-      aria-label="Environment">
+      aria-label="Filter by environment"
+      title={`Filter data and use ${environment} as the default run environment`}>
       
       {ENVS.map((env) => {
         const active = env === environment;
@@ -39,6 +40,8 @@ export function EnvironmentSwitcher() {
             key={env}
             role="radio"
             aria-checked={active}
+            aria-label={`Use ${env} environment`}
+            title={`Show ${env} data and use it for the next run`}
             onClick={() => setEnvironment(env)}
             className={cn(
               "inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-xs font-medium transition-colors",

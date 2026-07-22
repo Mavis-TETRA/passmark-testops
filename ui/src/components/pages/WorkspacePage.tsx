@@ -64,8 +64,11 @@ export function WorkspacePage() {
   const selectedCases = visible.filter((testCase) => selected.has(testCase.id));
   const runCases = selectedCases.length ? selectedCases : visible;
   const automated = runCases.filter((testCase) => testCase.automation === 'automated').length;
-  const targetId = activePack?.defaultTargetId || currentProject.defaultTargetId;
-  const runEnvironment = activePack?.defaultEnvironment || environment;
+  const preferredTargetId = activePack?.defaultTargetId || currentProject.defaultTargetId;
+  const targetId = currentProject.targets.some((target) => target.id === preferredTargetId && target.urls[environment])
+    ? preferredTargetId
+    : currentProject.targets.find((target) => target.urls[environment])?.id || null;
+  const runEnvironment = environment;
   const targetUrl = getTargetUrl(currentProject.id, targetId, runEnvironment);
   const smokePack = packs.find((pack) => pack.name.toLowerCase() === 'smoke');
   const regressionPack = packs.find((pack) => pack.name.toLowerCase() === 'regression');
@@ -215,15 +218,16 @@ function CreateCaseModal({ open, onClose, onCreate }: { open: boolean; onClose: 
   const [name, setName] = useState('');
   const [expected, setExpected] = useState('');
   const [automation, setAutomation] = useState<TestCase['automation']>('manual');
+  const [testType, setTestType] = useState<TestCase['type']>('Functional');
   const [saving, setSaving] = useState(false);
   const submit = async () => {
     if (!name.trim()) return;
     setSaving(true);
-    try { await onCreate({ code, name, expected, objective: name, automation, priority: 'Medium', severity: 'Major', type: 'Functional', steps: [{ id: `step-${Date.now()}`, action: name, expected }] }); setCode(''); setName(''); setExpected(''); onClose(); }
+    try { await onCreate({ code, name, expected, objective: name, automation, priority: 'Medium', severity: 'Major', type: testType, steps: [{ id: `step-${Date.now()}`, action: name, expected }] }); setCode(''); setName(''); setExpected(''); setTestType('Functional'); onClose(); }
     catch (error) { toast.error(error instanceof Error ? error.message : String(error)); }
     finally { setSaving(false); }
   };
-  return <Modal open={open} onClose={onClose} title="Create test case" subtitle="Add a focused manual or automated case." footer={<><Button variant="ghost" onClick={onClose}>Cancel</Button><Button variant="primary" disabled={!name.trim() || saving} onClick={() => void submit()}>{saving ? 'Saving…' : 'Create case'}</Button></>}><div className="space-y-4 p-5"><label className="block"><span className="mb-1 block text-xs font-medium text-ink-2">Case ID</span><input value={code} onChange={(event) => setCode(event.target.value.toUpperCase())} placeholder="TC-001" className="control font-mono" /></label><label className="block"><span className="mb-1 block text-xs font-medium text-ink-2">Test case name</span><input value={name} onChange={(event) => setName(event.target.value)} placeholder="Verify the primary checkout flow" className="control" /></label><label className="block"><span className="mb-1 block text-xs font-medium text-ink-2">Expected result</span><textarea value={expected} onChange={(event) => setExpected(event.target.value)} rows={3} className="w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm outline-none focus:border-accent" /></label><label className="block"><span className="mb-1 block text-xs font-medium text-ink-2">Execution mode</span><select value={automation} onChange={(event) => setAutomation(event.target.value as TestCase['automation'])} className="control"><option value="manual">Manual</option><option value="automated">Automated</option></select></label></div></Modal>;
+  return <Modal open={open} onClose={onClose} title="Create test case" subtitle="Add a focused manual or automated case." footer={<><Button variant="ghost" onClick={onClose}>Cancel</Button><Button variant="primary" disabled={!name.trim() || saving} onClick={() => void submit()}>{saving ? 'Saving…' : 'Create case'}</Button></>}><div className="space-y-4 p-5"><label className="block"><span className="mb-1 block text-xs font-medium text-ink-2">Case ID</span><input value={code} onChange={(event) => setCode(event.target.value.toUpperCase())} placeholder="TC-001" className="control font-mono" /></label><label className="block"><span className="mb-1 block text-xs font-medium text-ink-2">Test case name</span><input value={name} onChange={(event) => setName(event.target.value)} placeholder="Verify the primary checkout flow" className="control" /></label><label className="block"><span className="mb-1 block text-xs font-medium text-ink-2">Expected result</span><textarea value={expected} onChange={(event) => setExpected(event.target.value)} rows={3} className="w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm outline-none focus:border-accent" /></label><div className="grid grid-cols-2 gap-3"><label className="block"><span className="mb-1 block text-xs font-medium text-ink-2">Test type</span><TestTypeSelect value={testType} onChange={setTestType} /></label><label className="block"><span className="mb-1 block text-xs font-medium text-ink-2">Execution mode</span><select value={automation} onChange={(event) => setAutomation(event.target.value as TestCase['automation'])} className="control"><option value="manual">Manual</option><option value="automated">Automated</option></select></label></div></div></Modal>;
 }
 
 function EditCaseModal({ open, testCase, onClose, onSave }: { open: boolean; testCase: TestCase | null; onClose: () => void; onSave: (testCase: TestCase, input: Partial<TestCase>) => Promise<void> }) {
@@ -234,6 +238,7 @@ function EditCaseModal({ open, testCase, onClose, onSave }: { open: boolean; tes
   const [priority, setPriority] = useState<TestCase['priority']>('Medium');
   const [severity, setSeverity] = useState<TestCase['severity']>('Major');
   const [automation, setAutomation] = useState<TestCase['automation']>('manual');
+  const [testType, setTestType] = useState<TestCase['type']>('Functional');
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -245,13 +250,14 @@ function EditCaseModal({ open, testCase, onClose, onSave }: { open: boolean; tes
     setPriority(testCase.priority);
     setSeverity(testCase.severity);
     setAutomation(testCase.automation);
+    setTestType(testCase.type);
   }, [testCase]);
 
   const submit = async () => {
     if (!testCase || !name.trim()) return;
     setSaving(true);
     try {
-      await onSave(testCase, { code: code.trim(), name: name.trim(), objective, expected, priority, severity, automation });
+      await onSave(testCase, { code: code.trim(), name: name.trim(), objective, expected, priority, severity, automation, type: testType });
       onClose();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : String(error));
@@ -260,7 +266,11 @@ function EditCaseModal({ open, testCase, onClose, onSave }: { open: boolean; tes
     }
   };
 
-  return <Modal open={open} onClose={onClose} title="Edit test case" subtitle={testCase ? `Update ${testCase.code || testCase.id} without losing its run history.` : undefined} footer={<><Button variant="ghost" onClick={onClose}>Cancel</Button><Button variant="primary" disabled={!name.trim() || saving} onClick={() => void submit()}>{saving ? 'Saving…' : 'Save changes'}</Button></>}><div className="space-y-4 p-5"><div className="grid gap-3 sm:grid-cols-[160px_1fr]"><label className="block"><span className="mb-1 block text-xs font-medium text-ink-2">Case ID</span><input value={code} onChange={(event) => setCode(event.target.value.toUpperCase())} className="control font-mono" /></label><label className="block"><span className="mb-1 block text-xs font-medium text-ink-2">Test case name</span><input value={name} onChange={(event) => setName(event.target.value)} className="control" /></label></div><label className="block"><span className="mb-1 block text-xs font-medium text-ink-2">Objective</span><textarea value={objective} onChange={(event) => setObjective(event.target.value)} rows={2} className="w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm outline-none focus:border-accent" /></label><label className="block"><span className="mb-1 block text-xs font-medium text-ink-2">Expected result</span><textarea value={expected} onChange={(event) => setExpected(event.target.value)} rows={3} className="w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm outline-none focus:border-accent" /></label><div className="grid grid-cols-3 gap-3"><label className="block"><span className="mb-1 block text-xs font-medium text-ink-2">Priority</span><select value={priority} onChange={(event) => setPriority(event.target.value as TestCase['priority'])} className="control"><option>Critical</option><option>High</option><option>Medium</option><option>Low</option></select></label><label className="block"><span className="mb-1 block text-xs font-medium text-ink-2">Severity</span><select value={severity} onChange={(event) => setSeverity(event.target.value as TestCase['severity'])} className="control"><option>Blocker</option><option>Critical</option><option>Major</option><option>Minor</option><option>Trivial</option></select></label><label className="block"><span className="mb-1 block text-xs font-medium text-ink-2">Mode</span><select value={automation} onChange={(event) => setAutomation(event.target.value as TestCase['automation'])} className="control"><option value="manual">Manual</option><option value="automated">Automated</option></select></label></div></div></Modal>;
+  return <Modal open={open} onClose={onClose} title="Edit test case" subtitle={testCase ? `Update ${testCase.code || testCase.id} without losing its run history.` : undefined} footer={<><Button variant="ghost" onClick={onClose}>Cancel</Button><Button variant="primary" disabled={!name.trim() || saving} onClick={() => void submit()}>{saving ? 'Saving…' : 'Save changes'}</Button></>}><div className="space-y-4 p-5"><div className="grid gap-3 sm:grid-cols-[160px_1fr]"><label className="block"><span className="mb-1 block text-xs font-medium text-ink-2">Case ID</span><input value={code} onChange={(event) => setCode(event.target.value.toUpperCase())} className="control font-mono" /></label><label className="block"><span className="mb-1 block text-xs font-medium text-ink-2">Test case name</span><input value={name} onChange={(event) => setName(event.target.value)} className="control" /></label></div><label className="block"><span className="mb-1 block text-xs font-medium text-ink-2">Objective</span><textarea value={objective} onChange={(event) => setObjective(event.target.value)} rows={2} className="w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm outline-none focus:border-accent" /></label><label className="block"><span className="mb-1 block text-xs font-medium text-ink-2">Expected result</span><textarea value={expected} onChange={(event) => setExpected(event.target.value)} rows={3} className="w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm outline-none focus:border-accent" /></label><div className="grid grid-cols-2 gap-3 sm:grid-cols-4"><label className="block"><span className="mb-1 block text-xs font-medium text-ink-2">Test type</span><TestTypeSelect value={testType} onChange={setTestType} /></label><label className="block"><span className="mb-1 block text-xs font-medium text-ink-2">Priority</span><select value={priority} onChange={(event) => setPriority(event.target.value as TestCase['priority'])} className="control"><option>Critical</option><option>High</option><option>Medium</option><option>Low</option></select></label><label className="block"><span className="mb-1 block text-xs font-medium text-ink-2">Severity</span><select value={severity} onChange={(event) => setSeverity(event.target.value as TestCase['severity'])} className="control"><option>Blocker</option><option>Critical</option><option>Major</option><option>Minor</option><option>Trivial</option></select></label><label className="block"><span className="mb-1 block text-xs font-medium text-ink-2">Mode</span><select value={automation} onChange={(event) => setAutomation(event.target.value as TestCase['automation'])} className="control"><option value="manual">Manual</option><option value="automated">Automated</option></select></label></div></div></Modal>;
+}
+
+function TestTypeSelect({ value, onChange }: { value: TestCase['type']; onChange: (value: TestCase['type']) => void }) {
+  return <select value={value} onChange={(event) => onChange(event.target.value as TestCase['type'])} className="control"><option>Functional</option><option>UI</option><option>API</option><option>Accessibility</option><option>SEO</option><option>Performance</option><option>Security</option></select>;
 }
 
 function downloadCases(cases: TestCase[]) {

@@ -208,9 +208,9 @@ export async function createDefaultSuiteForProject(projectId: string) {
   return suite;
 }
 
-export async function ensureDefaultWorkspaceForProject(projectId: string, suiteId: string) {
+export async function ensureDefaultWorkspaceForProject(projectId: string, _suiteId: string) {
   const testCases = await prisma.testCase.findMany({
-    where: { suiteId, enabled: true },
+    where: { enabled: true, suite: { projectId } },
     orderBy: { createdAt: 'asc' },
   });
   const caseIds = testCases.map((testCase) => testCase.id);

@@ -3,6 +3,7 @@ import { Loader2Icon, SparklesIcon, WifiOffIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import { useApp } from '../../context/AppContext';
 import { cn } from '../../lib/cn';
+import type { TestType } from '../../lib/types';
 import { Button } from '../ui/Button';
 import { Modal } from '../ui/Modal';
 
@@ -28,6 +29,7 @@ export function AIGeneratorModal({
   const [source, setSource] = useState('');
   const [coverage, setCoverage] = useState<Coverage>('Quick');
   const [scope, setScope] = useState<Scope>('Smoke');
+  const [testType, setTestType] = useState<TestType>('Functional');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const suggestedCount = COVERAGE.find((item) => item.key === coverage)?.count || 8;
@@ -50,6 +52,7 @@ export function AIGeneratorModal({
       const request = [
         source.trim(),
         `Classification: ${scope}.`,
+        `Test type: ${testType}.`,
         `Coverage level: ${coverage}.`,
         `Generate approximately ${suggestedCount} focused test cases.`,
       ].join('\n');
@@ -96,6 +99,14 @@ export function AIGeneratorModal({
             placeholder="Paste the real requirement to generate cases from…"
             className="w-full resize-none rounded-lg border border-line bg-surface px-3 py-2.5 text-sm text-ink outline-none placeholder:text-ink-3 focus:border-accent"
           />
+        </div>
+
+        <div>
+          <label className="mb-1.5 block text-xs font-medium text-ink-2" htmlFor="ai-test-type">Test type</label>
+          <select id="ai-test-type" value={testType} onChange={(event) => setTestType(event.target.value as TestType)} className="control">
+            <option>Functional</option><option>UI</option><option>API</option><option>Accessibility</option><option>SEO</option><option>Performance</option><option>Security</option>
+          </select>
+          <p className="mt-1 text-2xs text-ink-3">The generated cases are classified so QA can run them with the matching runner.</p>
         </div>
 
         <div>

@@ -63,6 +63,7 @@ services:
     environment:
       PORT: 5000
       PASSMARK_CONTAINERIZED: "true"
+      PASSMARK_SECRET_KEY: ${PASSMARK_SECRET_KEY:-}
       DATABASE_URL: postgresql://passmark:passmark@postgres:5432/passmark
       LOCAL_AI_PROVIDER: ollama
       LOCAL_AI_BASE_URL: http://ollama:11434

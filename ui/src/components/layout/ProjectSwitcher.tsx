@@ -10,7 +10,7 @@ import { useApp } from "../../context/AppContext";
 import { cn } from "../../lib/cn";
 
 export function ProjectSwitcher() {
-  const { projects, currentProject, setCurrentProjectId } = useApp();
+  const { projects, currentProject, environment, setCurrentProjectId } = useApp();
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
   const ref = useRef<HTMLDivElement>(null);
@@ -75,7 +75,7 @@ export function ProjectSwitcher() {
                   <span className="min-w-0 flex-1">
                     <span className="block text-sm font-medium text-ink truncate">{p.name}</span>
                     <span className="block text-2xs text-ink-3 truncate">
-                      {p.environment} · {p.targets.length ? `${p.targets.length} target${p.targets.length === 1 ? "" : "s"}` : "No target"}
+                      {environment} · {p.targets.some((target) => target.urls[environment]) ? "Target configured" : "Not configured"}
                     </span>
                   </span>
                   {p.id === currentProject.id && <CheckIcon className="w-4 h-4 text-accent shrink-0" />}

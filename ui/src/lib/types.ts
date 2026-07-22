@@ -4,6 +4,21 @@ export type Theme = "light" | "dark";
 export type ViewMode = "quick" | "qa";
 export type EnvironmentName = "Local" | "Development" | "Staging" | "Production";
 export type TargetType = "Web URL" | "Local Web" | "Source Code" | "API";
+export type EnvironmentAuthMode = "none" | "form" | "bearer" | "api_key" | "basic" | "custom_headers";
+
+export interface EnvironmentAuthConfig {
+  mode: EnvironmentAuthMode;
+  loginUrl: string;
+  username: string;
+  usernameSelector: string;
+  passwordSelector: string;
+  submitSelector: string;
+  successSelector: string;
+  apiKeyName: string;
+  apiKeyLocation: "header" | "query";
+  secretConfigured: boolean;
+  customHeaderNames: string[];
+}
 
 export type TestStatus =
 "passed" |
@@ -36,7 +51,7 @@ export type RunErrorKind =
 export type StepStatus = "pass" | "fail" | "blocked" | "skipped" | "pending";
 export type Priority = "Critical" | "High" | "Medium" | "Low";
 export type Severity = "Blocker" | "Critical" | "Major" | "Minor" | "Trivial";
-export type TestType = "Functional" | "UI" | "API" | "Performance" | "Security";
+export type TestType = "Functional" | "UI" | "API" | "Accessibility" | "SEO" | "Performance" | "Security";
 export type Automation = "manual" | "automated";
 export type PackKind = "system" | "saved" | "all" | "manual" | "automated";
 export type CycleStatus = "draft" | "active" | "completed" | "archived";
@@ -62,6 +77,7 @@ export interface Project {
   lastRun: string | null;
   status: TestStatus;
   description?: string;
+  authByEnvironment: Partial<Record<EnvironmentName, EnvironmentAuthConfig>>;
 }
 
 export interface TestStep {

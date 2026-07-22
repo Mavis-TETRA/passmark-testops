@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { NavLink } from 'react-router-dom';
+import { NavLink, useLocation } from 'react-router-dom';
 import { BarChart3Icon, BeakerIcon, BotIcon, ChevronRightIcon, FolderIcon, MoonIcon, PlayIcon, SunIcon, ZapIcon } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { cn } from '../../lib/cn';
@@ -17,7 +17,9 @@ const navigation = [
 
 export function AppHeader() {
   const { theme, toggleTheme, viewMode, setViewMode, aiStatus } = useApp();
+  const { pathname } = useLocation();
   const [aiOpen, setAIOpen] = useState(false);
+  const isProjectsPage = pathname === '/projects' || pathname === '/';
 
   return (
     <>
@@ -28,8 +30,10 @@ export function AppHeader() {
             <span className="hidden text-sm font-semibold text-ink md:block">Passmark <span className="font-normal text-ink-3">TestOps</span></span>
           </NavLink>
           <div className="mx-1 hidden h-6 w-px bg-line sm:block" />
-          <ProjectSwitcher />
-          <ChevronRightIcon className="hidden h-4 w-4 text-ink-3 lg:block" />
+          {!isProjectsPage && <>
+            <ProjectSwitcher />
+            <ChevronRightIcon className="hidden h-4 w-4 text-ink-3 lg:block" />
+          </>}
           <div className="hidden lg:block"><EnvironmentSwitcher /></div>
           <div className="ml-auto flex items-center gap-2">
             <div className="hidden items-center rounded-lg border border-line bg-surface-2 p-0.5 sm:inline-flex" role="radiogroup" aria-label="View mode">

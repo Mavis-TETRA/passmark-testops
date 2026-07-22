@@ -10,7 +10,7 @@ import { RunProgress } from "../ui/RunProgress";
 import { StatusBadge } from "../ui/StatusBadge";
 
 export function TestCycleDrawer({ open, onClose, onStart }: {open: boolean;onClose: () => void;onStart: (cycle: TestCycle) => void;}) {
-  const { cycles, currentProject, testCases, testPacks, createCycle, updateCycle } = useApp();
+  const { cycles, currentProject, environment, testCases, testPacks, createCycle, updateCycle } = useApp();
   const [createOpen, setCreateOpen] = useState(false);
   const [name, setName] = useState("Release verification");
   const [packId, setPackId] = useState("");
@@ -20,6 +20,10 @@ export function TestCycleDrawer({ open, onClose, onStart }: {open: boolean;onClo
   const projectPacks = useMemo(() => testPacks.filter((pack) => pack.projectId === currentProject.id && !pack.archived), [currentProject.id, testPacks]);
   const projectCycles = cycles.filter((cycle) => cycle.projectId === currentProject.id && cycle.status !== "archived");
   const pack = projectPacks.find((item) => item.id === packId) ?? null;
+  const preferredTargetId = pack?.defaultTargetId ?? currentProject.defaultTargetId;
+  const cycleTargetId = currentProject.targets.some((target) => target.id === preferredTargetId && target.urls[environment])
+    ? preferredTargetId
+    : currentProject.targets.find((target) => target.urls[environment])?.id ?? null;
 
   useEffect(() => {
     if (!projectPacks.some((item) => item.id === packId)) setPackId(projectPacks.find((item) => item.name === "Release")?.id ?? projectPacks[0]?.id ?? "");
@@ -35,8 +39,8 @@ export function TestCycleDrawer({ open, onClose, onStart }: {open: boolean;onClo
       projectId: currentProject.id,
       packId: pack.id,
       release: release.trim() || "Unspecified build",
-      environment: pack.defaultEnvironment ?? currentProject.environment,
-      targetId: pack.defaultTargetId ?? currentProject.defaultTargetId,
+      environment,
+      targetId: cycleTargetId,
       owner: "Mai Tran",
       testers: ["Mai Tran"],
       startDate: new Date().toISOString().slice(0, 10),
@@ -70,7 +74,7 @@ export function TestCycleDrawer({ open, onClose, onStart }: {open: boolean;onClo
             <label className="block"><span className="mb-1 block text-xs font-medium text-ink-2">Cycle name</span><input value={name} onChange={(event) => setName(event.target.value)} className="control" /></label>
             <label className="block"><span className="mb-1 block text-xs font-medium text-ink-2">Test Pack</span><select value={packId} onChange={(event) => setPackId(event.target.value)} className="control">{projectPacks.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.caseIds.length} cases</option>)}</select></label>
             <div className="grid gap-3 sm:grid-cols-2"><label><span className="mb-1 block text-xs font-medium text-ink-2">Release / build</span><input value={release} onChange={(event) => setRelease(event.target.value)} className="control" /></label><label><span className="mb-1 block text-xs font-medium text-ink-2">Due date</span><input type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} className="control" /></label></div>
-            <div className="grid grid-cols-2 gap-3 rounded-lg border border-line p-3 text-sm text-ink-2"><p>Owner: <strong className="text-ink">Mai Tran</strong></p><p>Tester: <strong className="text-ink">Mai Tran</strong></p><p>Environment: <strong className="text-ink">{pack?.defaultEnvironment ?? currentProject.environment}</strong></p><p>Target: <strong className="text-ink">{pack?.defaultTargetId ?? currentProject.defaultTargetId ?? "Not configured"}</strong></p></div>
+            <div className="grid grid-cols-2 gap-3 rounded-lg border border-line p-3 text-sm text-ink-2"><p>Owner: <strong className="text-ink">Mai Tran</strong></p><p>Tester: <strong className="text-ink">Mai Tran</strong></p><p>Environment: <strong className="text-ink">{environment}</strong></p><p>Target: <strong className="text-ink">{cycleTargetId ?? "Not configured"}</strong></p></div>
           </>}
         </div>
       </Modal>

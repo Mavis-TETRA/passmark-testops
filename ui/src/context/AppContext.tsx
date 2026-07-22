@@ -15,6 +15,9 @@ import type {
   ViewMode,
 } from '../lib/types';
 
+export type RunTestType = 'all' | 'web_ui' | 'api' | 'accessibility' | 'seo' | 'performance' | 'security';
+export type RunProfile = 'quick' | 'standard' | 'comprehensive';
+
 export interface RunRequest {
   projectId: string;
   environment: EnvironmentName;
@@ -22,6 +25,8 @@ export interface RunRequest {
   packId: string | null;
   caseIds: string[];
   source: 'smoke' | 'workspace' | 'rerun';
+  testType?: RunTestType;
+  profile?: RunProfile;
 }
 
 interface AppState {
@@ -35,7 +40,7 @@ interface AppState {
   projects: Project[];
   createProject: (input: { name: string; description: string; baseUrl: string; environment: EnvironmentName }) => Promise<void>;
   currentProject: Project;
-  setCurrentProjectId: (id: string) => void;
+  setCurrentProjectId: (id: string, options?: { syncEnvironment?: boolean }) => void;
   environment: EnvironmentName;
   setEnvironment: (environment: EnvironmentName) => void;
   setLocalTargetUrl: (projectId: string, url: string) => void;
@@ -72,6 +77,7 @@ type RawRecord = Record<string, any>;
 
 const AppContext = createContext<AppState | null>(null);
 const LOCAL_TARGET_URLS_KEY = 'passmark-local-target-urls';
+const SELECTED_ENVIRONMENT_KEY = 'passmark-selected-environment';
 const defaultAI: LocalAIStatus = { online: false, provider: 'ollama', baseUrl: '', model: 'not-configured', models: [], message: 'Checking local AI…', checking: true };
 const emptyProject: Project = {
   id: '',
@@ -85,6 +91,7 @@ const emptyProject: Project = {
   totalCases: 0,
   lastRun: null,
   status: 'not_run',
+  authByEnvironment: {},
 };
 
 function environmentName(value: unknown): EnvironmentName {
@@ -97,6 +104,11 @@ function environmentName(value: unknown): EnvironmentName {
 
 function environmentValue(value: EnvironmentName): string {
   return value === 'Local' ? 'local' : value === 'Development' ? 'dev' : value === 'Production' ? 'production' : 'staging';
+}
+
+function readSelectedEnvironment(): EnvironmentName {
+  const value = localStorage.getItem(SELECTED_ENVIRONMENT_KEY);
+  return value === 'Local' || value === 'Development' || value === 'Staging' || value === 'Production' ? value : 'Staging';
 }
 
 function readLocalTargetUrls(): Record<string, string> {
@@ -238,7 +250,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [viewMode, setViewMode] = useState<ViewMode>(() => localStorage.getItem('passmark-view') === 'quick' ? 'quick' : 'qa');
   const [projects, setProjects] = useState<Project[]>([]);
   const [currentProjectId, setCurrentProjectIdState] = useState('');
-  const [environment, setEnvironment] = useState<EnvironmentName>('Staging');
+  const [environment, setEnvironment] = useState<EnvironmentName>(readSelectedEnvironment);
   const [testCases, setTestCases] = useState<TestCase[]>([]);
   const [testPacks, setTestPacks] = useState<TestPack[]>([]);
   const [runs, setRuns] = useState<TestRun[]>([]);
@@ -255,6 +267,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, [theme]);
 
   useEffect(() => localStorage.setItem('passmark-view', viewMode), [viewMode]);
+  useEffect(() => localStorage.setItem(SELECTED_ENVIRONMENT_KEY, environment), [environment]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -278,6 +291,24 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const mappedProjects = rawProjects.map((project): Project => {
         const projectTargets = rawTargets.filter((target) => target.projectId === project.id);
         const environments = rawEnvironments.filter((item) => item.projectId === project.id);
+        const authByEnvironment: Project['authByEnvironment'] = {};
+        for (const item of environments) {
+          const name = environmentName(item.name);
+          const auth = item.auth && typeof item.auth === 'object' ? item.auth : {};
+          authByEnvironment[name] = {
+            mode: ['form', 'bearer', 'api_key', 'basic', 'custom_headers'].includes(String(auth.mode)) ? auth.mode : 'none',
+            loginUrl: String(auth.loginUrl || ''),
+            username: String(auth.username || ''),
+            usernameSelector: String(auth.usernameSelector || ''),
+            passwordSelector: String(auth.passwordSelector || ''),
+            submitSelector: String(auth.submitSelector || ''),
+            successSelector: String(auth.successSelector || ''),
+            apiKeyName: String(auth.apiKeyName || ''),
+            apiKeyLocation: auth.apiKeyLocation === 'query' ? 'query' : 'header',
+            secretConfigured: Boolean(auth.secretConfigured),
+            customHeaderNames: Array.isArray(auth.customHeaderNames) ? auth.customHeaderNames.map(String) : [],
+          };
+        }
         const targets: Target[] = projectTargets.map((target, index) => {
           const urls: Target['urls'] = {};
           for (const item of environments) urls[environmentName(item.name)] = String(item.baseUrl || target.url || '');
@@ -290,7 +321,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         const completed = latest ? latest.passed + latest.failed + latest.blocked + latest.skipped : 0;
         return {
           id: String(project.id), name: String(project.name), description: String(project.description || ''),
-          environment: environmentName(project.environment), targets,
+          environment: environmentName(project.environment), targets, authByEnvironment,
           defaultTargetId: targets[0]?.id || null,
           passRate: completed ? Math.round(latest.passed / completed * 100) : null,
           failing: latest?.failed || 0,
@@ -352,11 +383,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const currentProject = useMemo(() => projects.find((project) => project.id === currentProjectId) || projects[0] || emptyProject, [currentProjectId, projects]);
 
-  const setCurrentProjectId = (id: string) => {
+  const setCurrentProjectId = (id: string, options?: { syncEnvironment?: boolean }) => {
     const project = projects.find((item) => item.id === id);
     if (!project) return;
     setCurrentProjectIdState(id);
-    setEnvironment(project.environment);
+    if (options?.syncEnvironment !== false) setEnvironment(project.environment);
   };
 
   const createProject = async (input: { name: string; description: string; baseUrl: string; environment: EnvironmentName }) => {
@@ -388,9 +419,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const project = projects.find((item) => item.id === projectId);
     if (!project) return;
     const smoke = testPacks.find((pack) => pack.projectId === projectId && pack.name.toLowerCase() === 'smoke' && !pack.archived) || null;
-    const targetId = smoke?.defaultTargetId || project.defaultTargetId;
-    setCurrentProjectId(projectId);
-    setSmokeIntent({ projectId, environment: smoke?.defaultEnvironment || project.environment, targetId, packId: smoke?.id || null, caseIds: smoke?.caseIds || [], source: 'smoke' });
+    const preferredTargetId = smoke?.defaultTargetId || project.defaultTargetId;
+    const targetId = project.targets.some((target) => target.id === preferredTargetId && target.urls[environment])
+      ? preferredTargetId
+      : project.targets.find((target) => target.urls[environment])?.id || null;
+    setCurrentProjectId(projectId, { syncEnvironment: false });
+    setSmokeIntent({ projectId, environment, targetId, packId: smoke?.id || null, caseIds: smoke?.caseIds || [], source: 'smoke' });
   };
 
   const startRun = async (request: RunRequest): Promise<TestRun> => {
@@ -405,7 +439,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
     const created = await post<RawRecord>('/api/testcase-files/run', {
       projectId: request.projectId, suiteId, targetId: request.targetId, url: targetUrl,
-      environment: environmentValue(request.environment), fileName: `${pack?.name || 'selected-cases'}.csv`, csvContent: casesToCsv(selectedCases), auth: { mode: 'none' }, packId: request.packId,
+      environment: environmentValue(request.environment),
+      fileName: `${pack?.name || 'selected-cases'}-${request.testType || 'all'}-${request.profile || 'custom'}.csv`,
+      csvContent: casesToCsv(selectedCases),
+      auth: { mode: 'none' },
+      packId: request.packId,
+      runConfiguration: { testType: request.testType || 'all', profile: request.profile || 'custom' },
     });
     const run = {
       ...mapRun(created),
