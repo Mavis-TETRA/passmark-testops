@@ -5,5 +5,6 @@ storage/*.log
 storage/*.err
 storage/passmark.db
 storage/postgres
+storage
 npm-debug.log
 .git

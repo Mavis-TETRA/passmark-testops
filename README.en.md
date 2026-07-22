@@ -22,7 +22,7 @@
 | Write testcases faster while keeping QC structure | AI creates Objective, Step, Expected Result, Priority, Actual Result, Pass/Fail-ready rows |
 | Review before automation | Export CSV, Excel-compatible `.xls`, and Word-compatible `.doc` files |
 | Keep multiple testing threads inside one project | Projects act as folders; Test Suites act as separate item/thread flows |
-| Avoid external AI API dependency | Uses local Ollama with default model `qwen2.5-coder:7b` |
+| Avoid external AI API dependency | Uses local Ollama with default model `qwen2.5-coder:3b` |
 | Run on modest deployment machines | Limits RAM/GPU, context, tokens, threads, and loaded model count |
 | Preserve failure evidence | Playwright captures screenshots and writes actual results into exported files |
 
@@ -153,7 +153,7 @@ Docker Compose runs:
 | --- | --- |
 | `postgres` | Primary database |
 | `ollama` | Local AI server |
-| `ollama-model` | One-time model pull job for `qwen2.5-coder:7b` |
+| `ollama-model` | One-time model pull job for `qwen2.5-coder:3b` |
 | `app` | Passmark TestOps web app |
 
 > It is normal for `ollama-model` to stop after pulling the model. The long-running containers are `postgres`, `ollama`, and `app`.
@@ -187,7 +187,7 @@ DATABASE_URL=postgresql://passmark:passmark@localhost:5432/passmark
 LOCAL_AI_PROVIDER=ollama
 LOCAL_AI_BASE_URL=http://localhost:11434
 LOCAL_AI_API_KEY=ollama
-LOCAL_AI_MODEL=qwen2.5-coder:7b
+LOCAL_AI_MODEL=qwen2.5-coder:3b
 LOCAL_AI_TIMEOUT_MS=180000
 LOCAL_AI_MAX_TOKENS=1536
 LOCAL_AI_CONTEXT_TOKENS=4096
@@ -209,7 +209,7 @@ You do not need to set this manually for Docker because `docker-compose.yml` alr
 Default model:
 
 ```text
-qwen2.5-coder:7b
+qwen2.5-coder:3b
 ```
 
 Low-resource settings:
@@ -277,7 +277,7 @@ That is expected after the model is pulled. It is a one-time job, not a backgrou
 
 ### AI Returns Bad JSON Or Too Few Cases
 
-The app has fallback behavior to keep the flow working. The default `qwen2.5-coder:7b` profile is capped around an 8 GB Ollama container budget with one loaded model, modest context, and low parallelism. You can change the model later, but consider RAM/GPU impact first.
+The app has fallback behavior to keep the flow working. The default `qwen2.5-coder:3b` profile caps Ollama at 5 GB RAM with one loaded model, modest context, and low parallelism so a 16 GB workstation retains capacity for an IDE and browser.
 
 ## Development Notes
 

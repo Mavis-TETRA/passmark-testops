@@ -19,6 +19,8 @@ model Project {
   testTargets  TestTarget[]
   testSuites   TestSuite[]
   testRuns     TestRun[]
+  testPacks    TestPack[]
+  testCycles   TestCycle[]
 }
 
 model TestTarget {
@@ -74,6 +76,16 @@ model TestCase {
   priority       String    @default("medium")
   enabled        Boolean   @default(true)
   expectedResult String    @default("")
+  severity       String    @default("major")
+  testType       String    @default("functional")
+  automation     String    @default("manual")
+  automationKind String    @default("manual")
+  steps          String    @default("[]")
+  actualResult   String    @default("")
+  defectId       String    @default("")
+  assignee       String    @default("")
+  reviewer       String    @default("")
+  notes          String    @default("")
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
   suite          TestSuite @relation(fields: [suiteId], references: [id], onDelete: Cascade)
@@ -93,6 +105,8 @@ model TestRun {
   passed            Int          @default(0)
   failed            Int          @default(0)
   skipped           Int          @default(0)
+  blocked           Int          @default(0)
+  packId            String?
   durationMs        Int          @default(0)
   generatedSpecPath String       @default("")
   rawOutputPath     String       @default("")
@@ -105,8 +119,53 @@ model TestRun {
   suite             TestSuite?   @relation(fields: [suiteId], references: [id], onDelete: SetNull)
   environment       Environment? @relation(fields: [environmentId], references: [id], onDelete: SetNull)
   target            TestTarget?  @relation(fields: [targetId], references: [id], onDelete: SetNull)
+  pack              TestPack?    @relation(fields: [packId], references: [id], onDelete: SetNull)
   results           TestResult[]
   artifacts         Artifact[]
+}
+
+model TestPack {
+  id                 String      @id
+  projectId          String
+  name               String
+  description        String      @default("")
+  kind               String      @default("saved")
+  owner              String      @default("")
+  caseIds            String      @default("[]")
+  defaultEnvironment String      @default("")
+  defaultTargetId    String      @default("")
+  archived           Boolean     @default(false)
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
+  project            Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  testCycles         TestCycle[]
+  testRuns           TestRun[]
+
+  @@index([projectId, archived])
+}
+
+model TestCycle {
+  id             String    @id
+  projectId      String
+  packId         String
+  name           String
+  release        String    @default("")
+  environment    String    @default("staging")
+  targetId       String    @default("")
+  owner          String    @default("")
+  testers        String    @default("[]")
+  startDate      DateTime
+  dueDate        DateTime
+  status         String    @default("draft")
+  executions     String    @default("{}")
+  linkedDefects  String    @default("[]")
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  project        Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  pack           TestPack  @relation(fields: [packId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, status])
+  @@index([packId])
 }
 
 model TestResult {

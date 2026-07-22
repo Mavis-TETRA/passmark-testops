@@ -5,8 +5,8 @@ import http from 'http';
 import path from 'path';
 import { promisify } from 'util';
 import { AuthConfig, generatePlaywrightTest } from '../scripts/generate-playwright-test';
-import { createDefaultSuiteForProject, createDefaultTargetForProject, ensureDefaultData, newId, prisma } from './db';
-import { askLocalAI, getConfiguredLocalAIModel } from './local-ai-client';
+import { createDefaultSuiteForProject, createDefaultTargetForProject, ensureDefaultData, ensureDefaultWorkspaceForProject, newId, prisma } from './db';
+import { askLocalAI, getConfiguredLocalAIModel, getLocalAIStatus, unloadLocalAIModel } from './local-ai-client';
 import { generateSeoTestPlan } from './seo-test-plan';
 import { writeSeoBasicSpec } from './seo-template-renderer';
 
@@ -14,7 +14,7 @@ dotenv.config();
 
 type ApiResponse = Record<string, unknown> | Array<Record<string, unknown>>;
 
-type ProjectEnvironment = 'dev' | 'staging' | 'production';
+type ProjectEnvironment = 'local' | 'dev' | 'staging' | 'production';
 
 type Project = {
   id: string;
@@ -72,9 +72,13 @@ type TestRun = {
   targetId?: string;
   targetName?: string;
   targetType?: TestTargetType;
+  packId?: string;
+  pack?: string;
+  environment?: ProjectEnvironment;
   status: TestRunStatus;
   createdAt: string;
   durationMs: number;
+  blocked?: number;
   summary: {
     total: number;
     passed: number;
@@ -164,11 +168,13 @@ type RunContext = {
   targetName?: string;
   targetType?: TestTargetType;
   environmentId?: string;
+  packId?: string;
 };
 
 type RunQueueJob = {
   runId: string;
   url: string;
+  displayUrl?: string;
   userRequest: string;
   auth: AuthInput;
   context: RunContext;
@@ -177,6 +183,7 @@ type RunQueueJob = {
   testcaseFilePath?: string;
   testcaseExcelFileName?: string;
   testcaseDocFileName?: string;
+  cancelRequested?: boolean;
 };
 
 type GeneratedSpecResult = {
@@ -228,55 +235,10 @@ const execFileAsync = promisify(execFile);
 const rootDir = process.cwd();
 const publicDir = path.join(rootDir, 'public');
 const storageDir = path.join(rootDir, 'storage');
-const runsPath = path.join(storageDir, 'seo-runs.json');
-const projectsPath = path.join(storageDir, 'projects.json');
-const suitesPath = path.join(storageDir, 'test-suites.json');
 const port = Number(process.env.PORT || 4173);
 
 function ensureStorage() {
   fs.mkdirSync(storageDir, { recursive: true });
-
-  if (!fs.existsSync(runsPath)) {
-    fs.writeFileSync(runsPath, '[]', 'utf-8');
-  }
-
-  if (!fs.existsSync(projectsPath)) {
-    fs.writeFileSync(projectsPath, '[]', 'utf-8');
-  }
-
-  if (!fs.existsSync(suitesPath)) {
-    fs.writeFileSync(suitesPath, '[]', 'utf-8');
-  }
-}
-
-function readRuns(): TestRun[] {
-  ensureStorage();
-  return JSON.parse(fs.readFileSync(runsPath, 'utf-8')) as TestRun[];
-}
-
-function writeRuns(runs: TestRun[]) {
-  ensureStorage();
-  fs.writeFileSync(runsPath, JSON.stringify(runs, null, 2), 'utf-8');
-}
-
-function readProjects(): Project[] {
-  ensureStorage();
-  return JSON.parse(fs.readFileSync(projectsPath, 'utf-8')) as Project[];
-}
-
-function writeProjects(projects: Project[]) {
-  ensureStorage();
-  fs.writeFileSync(projectsPath, JSON.stringify(projects, null, 2), 'utf-8');
-}
-
-function readSuites(): TestSuite[] {
-  ensureStorage();
-  return JSON.parse(fs.readFileSync(suitesPath, 'utf-8')) as TestSuite[];
-}
-
-function writeSuites(suites: TestSuite[]) {
-  ensureStorage();
-  fs.writeFileSync(suitesPath, JSON.stringify(suites, null, 2), 'utf-8');
 }
 
 function toRunSummary(run: TestRun): TestRunSummary {
@@ -350,9 +312,13 @@ function dbRunToApiRun(run: any): TestRun {
     targetId: run.targetId || undefined,
     targetName: run.target?.name,
     targetType: run.target?.type,
+    environment: run.environment?.name,
+    packId: run.packId || undefined,
+    pack: run.pack?.name,
     status,
     createdAt: new Date(run.createdAt).toISOString(),
     durationMs: run.durationMs,
+    blocked: run.blocked || 0,
     summary: {
       total: run.total,
       passed: run.passed,
@@ -548,6 +514,157 @@ function sendError(response: http.ServerResponse, statusCode: number, message: s
   });
 }
 
+function dbTestCaseToApiTestCase(testCase: any): Record<string, unknown> {
+  return {
+    ...testCase,
+    steps: parseJsonValue(testCase.steps, []),
+  };
+}
+
+function dbPackToApiPack(pack: any): Record<string, unknown> {
+  return {
+    ...pack,
+    caseIds: parseJsonValue<string[]>(pack.caseIds, []),
+    defaultEnvironment: pack.defaultEnvironment || undefined,
+    defaultTargetId: pack.defaultTargetId || undefined,
+  };
+}
+
+function dbCycleToApiCycle(cycle: any): Record<string, unknown> {
+  return {
+    ...cycle,
+    testers: parseJsonValue<string[]>(cycle.testers, []),
+    executions: parseJsonValue<Record<string, unknown>>(cycle.executions, {}),
+    linkedDefects: parseJsonValue<string[]>(cycle.linkedDefects, []),
+  };
+}
+
+function normalizePackInput(value: Record<string, unknown>, existing?: any) {
+  const projectId = normalizeOptionalText(value.projectId || existing?.projectId);
+  const name = normalizeOptionalText(value.name || existing?.name);
+
+  if (!projectId || !name) {
+    throw new Error('Project and Test Pack name are required.');
+  }
+
+  return {
+    id: existing?.id || normalizeOptionalText(value.id) || newId('pack'),
+    projectId,
+    name,
+    description: normalizeOptionalText(value.description ?? existing?.description),
+    kind: normalizeOptionalText(value.kind || existing?.kind) || 'saved',
+    owner: normalizeOptionalText(value.owner || existing?.owner) || 'Local QA Team',
+    caseIds: JSON.stringify(Array.isArray(value.caseIds) ? value.caseIds.filter((id): id is string => typeof id === 'string') : parseJsonValue(existing?.caseIds, [])),
+    defaultEnvironment: normalizeOptionalText(value.defaultEnvironment ?? existing?.defaultEnvironment),
+    defaultTargetId: normalizeOptionalText(value.defaultTargetId ?? existing?.defaultTargetId),
+    archived: typeof value.archived === 'boolean' ? value.archived : existing?.archived ?? false,
+  };
+}
+
+function normalizeCycleInput(value: Record<string, unknown>, existing?: any) {
+  const projectId = normalizeOptionalText(value.projectId || existing?.projectId);
+  const packId = normalizeOptionalText(value.packId || existing?.packId);
+  const name = normalizeOptionalText(value.name || existing?.name);
+
+  if (!projectId || !packId || !name) {
+    throw new Error('Project, Test Pack and cycle name are required.');
+  }
+
+  const startDate = new Date(String(value.startDate || existing?.startDate || new Date().toISOString()));
+  const dueDate = new Date(String(value.dueDate || existing?.dueDate || new Date().toISOString()));
+
+  if (Number.isNaN(startDate.getTime()) || Number.isNaN(dueDate.getTime())) {
+    throw new Error('Cycle dates are invalid.');
+  }
+
+  return {
+    id: existing?.id || normalizeOptionalText(value.id) || newId('cycle'),
+    projectId,
+    packId,
+    name,
+    release: normalizeOptionalText(value.release ?? existing?.release),
+    environment: normalizeOptionalText(value.environment || existing?.environment) || 'staging',
+    targetId: normalizeOptionalText(value.targetId ?? existing?.targetId),
+    owner: normalizeOptionalText(value.owner || existing?.owner) || 'Local QA Team',
+    testers: JSON.stringify(Array.isArray(value.testers) ? value.testers : parseJsonValue(existing?.testers, [])),
+    startDate,
+    dueDate,
+    status: normalizeOptionalText(value.status || existing?.status) || 'draft',
+    executions: JSON.stringify(value.executions && typeof value.executions === 'object' ? value.executions : parseJsonValue(existing?.executions, {})),
+    linkedDefects: JSON.stringify(Array.isArray(value.linkedDefects) ? value.linkedDefects : parseJsonValue(existing?.linkedDefects, [])),
+  };
+}
+
+function parseJsonValue<T>(value: unknown, fallback: T): T {
+  if (typeof value !== 'string' || !value.trim()) {
+    return fallback;
+  }
+
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function maskConfigValue(value: string | undefined, visible = 4): string {
+  const text = value?.trim();
+
+  if (!text) {
+    return 'not-configured';
+  }
+
+  if (text.length <= visible * 2) {
+    return '*'.repeat(text.length);
+  }
+
+  return `${text.slice(0, visible)}...${text.slice(-visible)}`;
+}
+
+function readConfigNumber(name: string, fallback: number): number {
+  const value = Number(process.env[name]?.trim());
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function readRuntimeConfigSummary(): Record<string, unknown> {
+  const provider = process.env.LOCAL_AI_PROVIDER?.trim() || 'ollama';
+
+  return {
+    app: {
+      port,
+      nodeEnv: process.env.NODE_ENV || 'development',
+      databaseUrl: maskConfigValue(process.env.DATABASE_URL, 12),
+    },
+    localAI: {
+      provider,
+      baseUrl: process.env.LOCAL_AI_BASE_URL?.trim() || 'not-configured',
+      apiKey: maskConfigValue(process.env.LOCAL_AI_API_KEY || 'ollama'),
+      model: getConfiguredLocalAIModel(),
+      timeoutMs: readConfigNumber('LOCAL_AI_TIMEOUT_MS', 180000),
+      maxTokens: readConfigNumber('LOCAL_AI_MAX_TOKENS', 1536),
+      contextTokens: readConfigNumber('LOCAL_AI_CONTEXT_TOKENS', 4096),
+      numThread: readConfigNumber('LOCAL_AI_NUM_THREAD', 2),
+      temperature: Number(process.env.LOCAL_AI_TEMPERATURE?.trim() || '0.2'),
+      keepAlive: process.env.LOCAL_AI_KEEP_ALIVE?.trim() || '2m',
+    },
+    testcaseGeneration: {
+      minRows: MIN_TESTCASE_FILE_ROWS,
+      defaultRows: DEFAULT_TESTCASE_FILE_ROWS,
+      maxRows: MAX_TESTCASE_FILE_ROWS,
+      csvEndpoint: 'POST /api/testcase-files/generate',
+      importEndpoint: 'POST /api/testcase-files/import',
+      runEndpoint: 'POST /api/testcase-files/run',
+    },
+    uiRequest: {
+      targetUrl: 'Sent as url',
+      project: 'Used as prompt context',
+      suite: 'Used as prompt context',
+      target: 'Used as prompt context',
+      auth: 'Sent as auth.mode',
+    },
+  };
+}
+
 function readBody(request: http.IncomingMessage): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     let body = '';
@@ -602,9 +719,31 @@ function normalizeOptionalText(value: unknown): string {
 }
 
 function normalizeEnvironment(value: unknown): ProjectEnvironment {
-  return value === 'dev' || value === 'staging' || value === 'production'
+  return value === 'local' || value === 'dev' || value === 'staging' || value === 'production'
     ? value
     : 'production';
+}
+
+function runnerReachableUrl(url: string, environment: ProjectEnvironment): string {
+  if (environment !== 'local' || process.env.PASSMARK_CONTAINERIZED !== 'true') return url;
+  const parsed = new URL(url);
+  if (['localhost', '127.0.0.1', '::1'].includes(parsed.hostname)) parsed.hostname = 'host.docker.internal';
+  return parsed.toString();
+}
+
+async function ensureRunEnvironment(projectId: string | undefined, value: unknown, baseUrl: string) {
+  if (!projectId) return undefined;
+  const name = normalizeEnvironment(value);
+  const existing = await prisma.environment.findFirst({ where: { projectId, name } });
+  if (existing) {
+    return existing.baseUrl === baseUrl ? existing : prisma.environment.update({ where: { id: existing.id }, data: { baseUrl } });
+  }
+  return prisma.environment.create({
+    data: {
+      id: newId('environment'), projectId, name, baseUrl,
+      authType: 'none', authConfig: '{}', customHeaders: '{}',
+    },
+  });
 }
 
 function normalizeSuiteType(value: unknown): TestSuiteType {
@@ -647,7 +786,7 @@ function createCaseId(): string {
 }
 
 function normalizeProjectInput(value: Record<string, unknown>, existing?: Project): Project {
-  const name = normalizeOptionalText(value.name);
+  const name = normalizeOptionalText(value.name || existing?.name);
 
   if (!name) {
     throw new Error('Project name is required.');
@@ -659,75 +798,12 @@ function normalizeProjectInput(value: Record<string, unknown>, existing?: Projec
   return {
     id: existing?.id || createProjectId(),
     name,
-    description: normalizeOptionalText(value.description),
+    description: normalizeOptionalText(value.description ?? existing?.description),
     baseUrl,
     environment: normalizeEnvironment(value.environment),
     createdAt: existing?.createdAt || now,
     updatedAt: now,
   };
-}
-
-function normalizeSuiteInput(value: Record<string, unknown>, existing?: TestSuite): TestSuite {
-  const name = normalizeOptionalText(value.name);
-  const projectId = normalizeOptionalText(value.projectId || existing?.projectId);
-
-  if (!name) {
-    throw new Error('Test suite name is required.');
-  }
-
-  if (!projectId) {
-    throw new Error('Project is required for this test suite.');
-  }
-
-  if (!readProjects().some((project) => project.id === projectId)) {
-    throw new Error('Project not found for this test suite.');
-  }
-
-  const now = new Date().toISOString();
-
-  return {
-    id: existing?.id || createSuiteId(),
-    projectId,
-    name,
-    type: normalizeSuiteType(value.type),
-    description: normalizeOptionalText(value.description),
-    config: value.config && typeof value.config === 'object'
-      ? (value.config as Record<string, unknown>)
-      : existing?.config || {},
-    enabled: typeof value.enabled === 'boolean' ? value.enabled : existing?.enabled ?? true,
-    createdAt: existing?.createdAt || now,
-    updatedAt: now,
-  };
-}
-
-async function resolveProjectSuiteContext(projectIdValue: unknown, suiteIdValue: unknown): Promise<{
-  project?: Project;
-  suite?: TestSuite;
-}> {
-  const projectId = normalizeOptionalText(projectIdValue);
-  const suiteId = normalizeOptionalText(suiteIdValue);
-  const suite = suiteId
-    ? ((await prisma.testSuite.findUnique({ where: { id: suiteId } })) as unknown as TestSuite | undefined)
-    : undefined;
-  const project = suite
-    ? ((await prisma.project.findUnique({ where: { id: suite.projectId } })) as unknown as Project | undefined)
-    : projectId
-      ? ((await prisma.project.findUnique({ where: { id: projectId } })) as unknown as Project | undefined)
-      : undefined;
-
-  if (suiteId && !suite) {
-    throw new Error('Test suite not found.');
-  }
-
-  if (suite && !suite.enabled) {
-    throw new Error('Selected test suite is disabled.');
-  }
-
-  if (suite && projectId && suite.projectId !== projectId) {
-    throw new Error('Selected test suite does not belong to this project.');
-  }
-
-  return { project, suite };
 }
 
 async function resolveProjectSuiteTargetContext(
@@ -944,7 +1020,7 @@ async function normalizeDbTargetInput(value: Record<string, unknown>, existing?:
 async function normalizeDbTestCaseInput(value: Record<string, unknown>, existing?: any) {
   const suiteId = normalizeOptionalText(value.suiteId || existing?.suiteId);
   const code = normalizeOptionalText(value.code || existing?.code).toUpperCase();
-  const name = normalizeOptionalText(value.name);
+  const name = normalizeOptionalText(value.name || existing?.name);
 
   if (!suiteId) {
     throw new Error('Test suite is required for this test case.');
@@ -964,16 +1040,132 @@ async function normalizeDbTestCaseInput(value: Record<string, unknown>, existing
     throw new Error('Test suite not found for this test case.');
   }
 
+  const duplicate = await prisma.testCase.findUnique({
+    where: { suiteId_code: { suiteId, code } },
+  });
+
+  if (duplicate && duplicate.id !== existing?.id) {
+    throw new Error(`Test case code ${code} already exists in this project.`);
+  }
+
+  const automation = normalizeOptionalText(value.automation) || existing?.automation || 'manual';
+  const automationKind = automation === 'automated'
+    ? normalizeAutomationKind(value.automationKind ?? existing?.automationKind ?? 'generic_visible_content')
+    : 'manual';
+
   return {
     id: existing?.id || createCaseId(),
     suiteId,
     code,
     name,
-    description: normalizeOptionalText(value.description),
+    description: normalizeOptionalText(value.description ?? existing?.description),
     priority: normalizeOptionalText(value.priority) || existing?.priority || 'medium',
     enabled: typeof value.enabled === 'boolean' ? value.enabled : existing?.enabled ?? true,
-    expectedResult: normalizeOptionalText(value.expectedResult),
+    expectedResult: normalizeOptionalText(value.expectedResult ?? existing?.expectedResult),
+    severity: normalizeOptionalText(value.severity) || existing?.severity || 'major',
+    testType: normalizeOptionalText(value.testType) || existing?.testType || 'functional',
+    automation,
+    automationKind: automationKind === 'manual' && automation === 'automated' ? 'generic_visible_content' : automationKind,
+    steps: Array.isArray(value.steps) ? JSON.stringify(value.steps) : existing?.steps || '[]',
+    actualResult: normalizeOptionalText(value.actualResult ?? existing?.actualResult),
+    defectId: normalizeOptionalText(value.defectId ?? existing?.defectId),
+    assignee: normalizeOptionalText(value.assignee ?? existing?.assignee),
+    reviewer: normalizeOptionalText(value.reviewer ?? existing?.reviewer),
+    notes: normalizeOptionalText(value.notes ?? existing?.notes),
   };
+}
+
+async function syncWorkspaceForSuite(suiteId: string) {
+  const suite = await prisma.testSuite.findUnique({ where: { id: suiteId } });
+  if (suite) await ensureDefaultWorkspaceForProject(suite.projectId, suite.id);
+}
+
+async function persistWorkspaceRows(
+  suiteId: string | undefined,
+  rows: TestcaseFileRow[],
+  createUniqueCodes = false
+): Promise<string[]> {
+  if (!suiteId) {
+    return [];
+  }
+
+  const ids: string[] = [];
+  const usedCodes = new Set((await prisma.testCase.findMany({ where: { suiteId }, select: { code: true } }))
+    .map((testCase) => testCase.code.toUpperCase()));
+
+  for (const [index, row] of rows.entries()) {
+    const baseCode = (row.caseId || `TC-${String(index + 1).padStart(3, '0')}`).slice(0, 80).toUpperCase();
+    let code = baseCode;
+    if (createUniqueCodes) {
+      let suffix = 1;
+      while (usedCodes.has(code)) {
+        code = `${baseCode.slice(0, Math.max(1, 79 - String(suffix).length))}-${suffix}`;
+        suffix += 1;
+      }
+    }
+    usedCodes.add(code);
+    const steps = (row.steps || '')
+      .split(/\r?\n/)
+      .map((action) => action.replace(/^\d+[.)]\s*/, '').trim())
+      .filter(Boolean)
+      .map((action, stepIndex) => ({
+        id: `${code}-step-${stepIndex + 1}`,
+        action,
+        expected: row.expectedResult || 'The expected behavior is observed.',
+      }));
+    const record = await prisma.testCase.upsert({
+      where: { suiteId_code: { suiteId, code } },
+      update: {
+        name: row.title || code,
+        description: row.objective || '',
+        priority: row.priority || 'medium',
+        severity: row.severity || 'major',
+        testType: row.testType || 'functional',
+        automation: row.automationCandidate !== 'no' && row.automationKind !== 'manual' ? 'automated' : 'manual',
+        automationKind: row.automationKind || 'manual',
+        steps: JSON.stringify(steps),
+        expectedResult: row.expectedResult || '',
+        actualResult: row.actualResult || '',
+        defectId: row.defectId || '',
+        assignee: row.testerName || '',
+        reviewer: row.reviewerName || '',
+        notes: row.notes || '',
+      },
+      create: {
+        id: newId('case'),
+        suiteId,
+        code,
+        name: row.title || code,
+        description: row.objective || '',
+        priority: row.priority || 'medium',
+        severity: row.severity || 'major',
+        testType: row.testType || 'functional',
+        automation: row.automationCandidate !== 'no' && row.automationKind !== 'manual' ? 'automated' : 'manual',
+        automationKind: row.automationKind || 'manual',
+        steps: JSON.stringify(steps),
+        expectedResult: row.expectedResult || '',
+        actualResult: row.actualResult || '',
+        defectId: row.defectId || '',
+        assignee: row.testerName || '',
+        reviewer: row.reviewerName || '',
+        notes: row.notes || '',
+      },
+    });
+    ids.push(record.id);
+  }
+
+  await syncWorkspaceForSuite(suiteId);
+
+  return ids;
+}
+
+async function addCaseIdsToPack(packId: unknown, caseIds: string[]) {
+  const id = normalizeOptionalText(packId);
+  if (!id || !caseIds.length) return;
+  const pack = await prisma.testPack.findUnique({ where: { id } });
+  if (!pack) return;
+  const merged = Array.from(new Set([...parseJsonValue<string[]>(pack.caseIds, []), ...caseIds]));
+  await prisma.testPack.update({ where: { id }, data: { caseIds: JSON.stringify(merged) } });
 }
 
 function normalizeAuth(value: unknown): AuthInput {
@@ -1325,6 +1517,7 @@ const { chromium } = require('playwright');
         PASSMARK_AUTH_PASSWORD: auth?.password || '',
       },
       maxBuffer: 1024 * 1024,
+      timeout: 60000,
     });
 
     return JSON.parse(result.stdout.trim()) as SeoAuditValues;
@@ -1609,6 +1802,9 @@ function parseCsv(text: string): string[][] {
 function inferAutomationKind(testCase: TestCaseDetail): string {
   const text = `${testCase.title} ${testCase.description || ''} ${testCase.objective || ''} ${testCase.expected || ''}`.toLowerCase();
 
+  if (text.includes('page load speed') || text.includes('load performance')) return 'page_load_performance';
+  if (text.includes('meta description length')) return 'meta_description_length';
+  if (text.includes('image alt')) return 'image_alt_text';
   if (text.includes('meta description')) return 'meta_description_exists';
   if (text.includes('canonical')) return 'canonical_exists';
   if (text.includes('h1') || text.includes('heading')) return 'h1_exists';
@@ -1679,6 +1875,23 @@ function csvField(row: Record<string, string>, ...names: string[]): string {
   return '';
 }
 
+const csvHeaderAliases: Record<string, string> = {
+  testcaseid: 'caseId',
+  testcasecode: 'caseId',
+  testcase: 'title',
+  testcasename: 'title',
+  name: 'title',
+  expected: 'expectedResult',
+  mode: 'automationKind',
+};
+
+function canonicalCsvHeader(header: string): string {
+  const clean = header.replace(/^\uFEFF/, '').trim();
+  const normalized = clean.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const knownColumn = testcaseFileColumns.find((column) => column.toLowerCase() === normalized);
+  return knownColumn || csvHeaderAliases[normalized] || clean;
+}
+
 function testcaseRowsFromCsv(csvContent: string): TestcaseFileRow[] {
   const parsed = parseCsv(csvContent.trim());
 
@@ -1686,7 +1899,7 @@ function testcaseRowsFromCsv(csvContent: string): TestcaseFileRow[] {
     throw new Error('CSV must include a header row and at least one testcase row.');
   }
 
-  const headers = parsed[0].map((header) => header.trim());
+  const headers = parsed[0].map(canonicalCsvHeader);
   const titleAliases = ['title', 'testCaseTitle'];
   const hasTitle = titleAliases.some((column) => headers.includes(column));
   const missingColumns = hasTitle ? [] : ['title'];
@@ -2247,16 +2460,19 @@ function normalizeAutomationKind(value: unknown): string {
   const supported = [
     'manual',
     'page_load',
+    'page_load_performance',
     'title_exists',
     'selector_visible',
     'body_text_contains',
     'meta_description_exists',
+    'meta_description_length',
     'canonical_exists',
     'h1_exists',
     'html_lang_exists',
     'viewport_exists',
     'link_health_basic',
     'image_resources_ok',
+    'image_alt_text',
     'no_console_errors',
     'no_page_errors',
     'form_validation',
@@ -2301,8 +2517,8 @@ function rowToPreviewCase(row: TestcaseFileRow): TestCaseDetail {
   };
 }
 
-const MIN_TESTCASE_FILE_ROWS = 40;
-const DEFAULT_TESTCASE_FILE_ROWS = 40;
+const MIN_TESTCASE_FILE_ROWS = 5;
+const DEFAULT_TESTCASE_FILE_ROWS = 12;
 const MAX_TESTCASE_FILE_ROWS = 80;
 
 function clampTestcaseCount(value: unknown, fallback = DEFAULT_TESTCASE_FILE_ROWS): number {
@@ -2324,184 +2540,30 @@ function recommendedCaseCountFromAi(parsed: Record<string, unknown>): number {
     ? parsed.coverageStrategy as Record<string, unknown>
     : {};
 
-  return clampTestcaseCount(strategy.recommendedCaseCount);
+  return clampTestcaseCount(strategy.recommendedCaseCount ?? parsed.recommendedCaseCount ?? parsed.n);
 }
 
-function fallbackProfessionalRows(userRequest: string, targetUrl: string, count = DEFAULT_TESTCASE_FILE_ROWS): TestcaseFileRow[] {
-  const modules = [
-    ['Availability', 'Target access', 'smoke', 'page_load'],
-    ['Content', 'Visible content', 'functional', 'generic_visible_content'],
-    ['Navigation', 'Links and routing', 'navigation', 'link_health_basic'],
-    ['UI', 'Layout and readability', 'ui', 'generic_visible_content'],
-    ['Validation', 'Inputs and forms', 'validation', 'form_validation'],
-    ['Data', 'Displayed information', 'data', 'body_text_contains'],
-    ['State', 'Empty, loading, and error states', 'edge', 'manual'],
-    ['Accessibility', 'Basic accessibility signals', 'accessibility', 'generic_visible_content'],
-    ['SEO', 'Metadata and headings', 'seo', 'title_exists'],
-    ['Resources', 'Images and assets', 'performance', 'image_resources_ok'],
-    ['Runtime', 'Console and page errors', 'regression', 'no_console_errors'],
-    ['Security', 'Safe rendered output', 'security', 'manual'],
-  ];
-  const scenarioVariants = [
-    'baseline happy path',
-    'required data and content',
-    'empty state and missing content',
-    'edge input or uncommon state',
-    'navigation and workflow continuity',
-    'responsive and visual consistency',
-    'error handling and recovery',
-  ];
-  const safeRequest = userRequest.trim() || 'the target page and its main user-facing behavior';
-  const safeCount = clampTestcaseCount(count);
-
-  return Array.from({ length: safeCount }, (_, index) => {
-    const [module, feature, testType, automationKind] = modules[index % modules.length];
-    const scenario = scenarioVariants[Math.floor(index / modules.length) % scenarioVariants.length];
-    const caseNumber = index + 1;
-    const priority = index < 10 ? 'high' : index < 34 ? 'medium' : 'low';
-    const severity = index < 8 ? 'critical' : index < 30 ? 'major' : 'minor';
-    const manual = automationKind === 'manual';
-
-    return {
-      caseId: `TC-${String(caseNumber).padStart(3, '0')}`,
-      projectId: '',
-      projectName: '',
-      module,
-      requirementId: '',
-      feature,
-      title: `${feature} - ${scenario} for ${safeRequest}`.slice(0, 120),
-      objective: `Verify ${feature.toLowerCase()} for the ${scenario} scenario of ${safeRequest}.`,
-      interDependencies: 'N/A',
-      preconditions: `Target URL is available: ${targetUrl}`,
-      testDataPreparation: userRequest.trim() ? userRequest.trim() : 'N/A',
-      testData: userRequest.trim() ? userRequest.trim() : 'Default target content',
-      steps: [
-        'Open the configured target URL.',
-        `Review the ${feature.toLowerCase()} behavior for the ${scenario} scenario.`,
-        'Compare the observed behavior with the expected result.',
-        'Record pass/fail with actual evidence.',
-      ].map((step, stepIndex) => `${stepIndex + 1}. ${step}`).join('\n'),
-      actionInputData: '',
-      expectedResult: `${feature} should satisfy the ${scenario} scenario, expose clear information, and avoid user-facing errors.`,
-      priority,
-      regression: 'yes',
-      platform: 'Web',
-      tools: manual ? 'Manual review' : 'Playwright Chromium',
-      severity,
-      testType,
-      automationCandidate: manual ? 'no' : 'partial',
-      automationKind,
-      selector: '',
-      expectedText: '',
-      inputImage: '',
-      actualImage: '',
-      screenshotPolicy: 'on-failure',
-      status: '',
-      actualResult: '',
-      defectId: '',
-      testerName: '',
-      reviewerName: '',
-      reviewDate: '',
-      notes: manual ? 'Manual review recommended because this case requires product judgment.' : '',
-      durationMs: '',
-    };
-  });
+function requestedTestcaseCount(userRequest: string): number {
+  const match = userRequest.match(/(?:approximately|about|around|~)\s*(\d{1,2})/i)
+    || userRequest.match(/(\d{1,2})\s*(?:focused\s+)?test\s*cases?/i);
+  return clampTestcaseCount(match?.[1]);
 }
 
-function buildProfessionalTestcasePrompt(url: string, userRequest: string, suite?: TestSuite, target?: TestTarget): string {
-  return `
-Return only JSON. No markdown outside JSON.
-
-You are a Senior QA/QC Engineer with many years of experience designing test processes and writing production-grade testcase files.
-
-Product:
-Passmark TestOps is shifting to a testcase-file-first workflow. The most important output is a high-quality CSV/XLSX-ready testcase file that QA or an owner can download, review, edit, import again, and optionally run with automation later.
-
-Target URL:
-${url}
-
-Suite context:
-${suite ? `Name: ${suite.name}\nType: ${suite.type}\nDescription: ${suite.description}\nConfig: ${JSON.stringify(suite.config || {})}` : 'No suite selected.'}
-
-Target context:
-${target ? `Name: ${target.name}\nType: ${target.type}\nURL: ${target.url}` : 'No target selected.'}
-
-User request:
-${userRequest.trim() || 'Create a professional testcase file for this target.'}
-
-Required QA thinking:
-1. Identify what system or page is being tested.
-2. Identify modules/features that should be covered.
-3. Identify risk areas.
-4. Decide which test types are needed: functional, UI/UX, validation, navigation, data display, forms, error/empty/loading states, permissions/auth if applicable, SEO, accessibility, performance, security, compatibility, edge and negative cases.
-5. Estimate a credible testcase count. Do not default to 6, 8, 14, or 24. Use 40-80 cases depending on scope.
-6. Generate focused, reviewable testcase rows. Each row must have one clear objective and expected result.
-
-Return this exact JSON shape:
-{
-  "coverageStrategy": {
-    "recommendedCaseCount": 40,
-    "rationale": "Why this amount is enough for the request.",
-    "coverageGroups": ["Functional", "Navigation", "Validation"],
-    "automationScope": "Which parts can be automated and which should stay manual.",
-    "assumptions": ["Assumption caused by missing information"]
-  },
-  "testcases": [
-    {
-      "caseId": "TC-001",
-      "projectId": "Optional project/reference id",
-      "projectName": "Optional project name",
-      "module": "Module or page area",
-      "requirementId": "Optional requirement id",
-      "feature": "Specific feature",
-      "title": "Short testcase title",
-      "objective": "What this testcase proves",
-      "interDependencies": "Other testcase ids or N/A",
-      "preconditions": "Required setup before execution",
-      "testDataPreparation": "Data setup before executing the case",
-      "testData": "Data/accounts/content needed",
-      "steps": ["Step 1", "Step 2", "Step 3"],
-      "actionInputData": "Detailed action/input data. Leave empty if steps already describe it.",
-      "expectedResult": "Clear expected result",
-      "priority": "high",
-      "regression": "yes",
-      "platform": "Web",
-      "tools": "Playwright Chromium",
-      "severity": "major",
-      "testType": "functional",
-      "automationCandidate": "yes",
-      "automationKind": "page_load",
-      "selector": "",
-      "expectedText": "",
-      "inputImage": "",
-      "screenshotPolicy": "on-failure",
-      "notes": ""
-    }
-  ]
-}
-
-Allowed priority values: high, medium, low.
-Allowed severity values: critical, major, minor, trivial.
-Allowed automationCandidate values: yes, no, partial.
-Allowed automationKind values: manual, page_load, title_exists, selector_visible, body_text_contains, meta_description_exists, canonical_exists, h1_exists, html_lang_exists, viewport_exists, link_health_basic, image_resources_ok, no_console_errors, no_page_errors, form_validation, generic_visible_content.
-
-Rules:
-- recommendedCaseCount must be between 40 and 80.
-- The testcases array must contain the recommendedCaseCount number of rows unless the request is extremely narrow.
-- Broad pages, dashboards, ecommerce pages, forms, data pages, and mixed SEO/content/UI requests should usually use 45-80 rows.
-- Prefer practical QC depth over generic checks.
-- Include positive, negative, edge, UI/content, data, navigation, error state, and manual review cases when relevant.
-- Mark cases as manual/no when they require human judgment or unsupported automation.
-- Put inputImage as an empty placeholder unless the user explicitly supplies an existing image path/URL.
-- Use screenshotPolicy "on-failure" for automatable cases and "manual" for manual-only review cases.
-- Do not invent credentials or destructive actions.
-- Do not include load tests, DDoS, stress traffic, or high-concurrency tests.
-- Keep each testcase independently executable and understandable in Excel.
-`;
-}
-
-function rowSignature(row: TestcaseFileRow): string {
-  return `${row.module}|${row.feature}|${row.title}`.toLowerCase().replace(/\s+/g, ' ').trim();
+function buildProfessionalTestcasePrompt(
+  url: string,
+  userRequest: string,
+  count: number,
+  startIndex: number,
+  existingTitles: string[],
+  suite?: TestSuite,
+  target?: TestTarget
+): string {
+  return `Return compact JSON only: {"n":${count},"cases":[{"t":"short unique title","e":"specific expected result","k":"automation kind","p":"high|medium|low","s":"critical|major|minor|trivial"}]}.
+Create exactly ${count} professional QA cases numbered conceptually ${startIndex + 1}-${startIndex + count} for ${url}.
+Allowed k: manual,page_load,page_load_performance,title_exists,selector_visible,body_text_contains,meta_description_exists,meta_description_length,canonical_exists,h1_exists,html_lang_exists,viewport_exists,link_health_basic,image_resources_ok,image_alt_text,no_console_errors,no_page_errors,form_validation,generic_visible_content.
+Mix positive, negative and edge coverage when relevant. No destructive, load or stress tests. Do not invent credentials. Avoid duplicate titles.
+${existingTitles.length ? `Do not repeat these existing titles: ${existingTitles.slice(-20).join(' | ')}.` : ''}
+Suite: ${suite?.name || 'General'} (${suite?.type || target?.type || 'web'}). Request: ${userRequest.trim() || 'Create focused test cases.'}`;
 }
 
 function normalizeCaseIds(rows: TestcaseFileRow[]): TestcaseFileRow[] {
@@ -2511,55 +2573,16 @@ function normalizeCaseIds(rows: TestcaseFileRow[]): TestcaseFileRow[] {
   }));
 }
 
-function completeRowsToTarget(
-  rows: TestcaseFileRow[],
-  fallbackRows: TestcaseFileRow[],
-  targetCount: number
-): TestcaseFileRow[] {
-  const target = clampTestcaseCount(targetCount);
-  const merged = rows.slice(0, MAX_TESTCASE_FILE_ROWS);
-  const seen = new Set(merged.map(rowSignature));
-
-  for (const fallbackRow of fallbackRows) {
-    if (merged.length >= target) {
-      break;
-    }
-
-    const signature = rowSignature(fallbackRow);
-
-    if (seen.has(signature)) {
-      continue;
-    }
-
-    seen.add(signature);
-    merged.push(fallbackRow);
-  }
-
-  let fallbackIndex = 0;
-  while (merged.length < target && fallbackRows.length) {
-    const fallbackRow = fallbackRows[fallbackIndex % fallbackRows.length];
-    merged.push({
-      ...fallbackRow,
-      title: `${fallbackRow.title} coverage extension ${fallbackIndex + 1}`.slice(0, 120),
-      notes: [fallbackRow.notes, 'Added by backend because AI returned fewer rows than its recommended coverage count.']
-        .filter(Boolean)
-        .join(' '),
-    });
-    fallbackIndex += 1;
-  }
-
-  return normalizeCaseIds(merged.slice(0, MAX_TESTCASE_FILE_ROWS));
-}
-
 function normalizeProfessionalRows(
-  parsed: Record<string, unknown>,
-  fallbackRows: TestcaseFileRow[],
-  targetCount: number
+  parsed: Record<string, unknown>
 ): TestcaseFileRow[] {
-  const rawCases = Array.isArray(parsed.testcases) ? parsed.testcases : [];
-  const rows = rawCases.map((item, index) => {
+  const rawCases = Array.isArray(parsed.testcases) ? parsed.testcases : Array.isArray(parsed.cases) ? parsed.cases : [];
+  const rows = rawCases.map((item, index): TestcaseFileRow | null => {
     const row = item && typeof item === 'object' ? item as Record<string, unknown> : {};
-    const automationKind = normalizeAutomationKind(row.automationKind);
+    const title = testcaseText(row.title ?? row.t);
+    if (!title) return null;
+    const expectedResult = testcaseText(row.expectedResult ?? row.expected ?? row.e, `${title} should behave as required.`);
+    const automationKind = normalizeAutomationKind(row.automationKind ?? row.k);
 
     return {
       caseId: testcaseText(row.caseId, `TC-${String(index + 1).padStart(3, '0')}`),
@@ -2567,21 +2590,21 @@ function normalizeProfessionalRows(
       projectName: testcaseText(row.projectName),
       module: testcaseText(row.module, 'General'),
       requirementId: testcaseText(row.requirementId),
-      feature: testcaseText(row.feature, 'Page behavior'),
-      title: testcaseText(row.title, `Generated testcase ${index + 1}`),
-      objective: testcaseText(row.objective, testcaseText(row.description, 'Verify the expected behavior.')),
+      feature: testcaseText(row.feature, title),
+      title,
+      objective: testcaseText(row.objective, testcaseText(row.description, `Verify ${title}.`)),
       interDependencies: testcaseText(row.interDependencies, 'N/A'),
       preconditions: testcaseText(row.preconditions, 'Target URL is reachable.'),
       testDataPreparation: testcaseText(row.testDataPreparation, testcaseText(row.testData)),
       testData: testcaseText(row.testData),
-      steps: testcaseListText(row.steps) || '1. Open the target URL.\n2. Execute the described check.\n3. Record the result.',
+      steps: testcaseListText(row.steps) || `1. Open the configured target URL.\n2. Verify ${title}.\n3. Record the observed result.`,
       actionInputData: testcaseText(row.actionInputData),
-      expectedResult: testcaseText(row.expectedResult, testcaseText(row.expected, 'The expected behavior should be correct.')),
-      priority: normalizePriority(row.priority),
+      expectedResult,
+      priority: normalizePriority(row.priority ?? row.p),
       regression: testcaseText(row.regression, 'yes'),
       platform: testcaseText(row.platform, 'Web'),
       tools: testcaseText(row.tools, automationKind === 'manual' ? 'Manual review' : 'Playwright Chromium'),
-      severity: normalizeSeverity(row.severity),
+      severity: normalizeSeverity(row.severity ?? row.s),
       testType: normalizeTestType(row.testType),
       automationCandidate: normalizeAutomationCandidate(row.automationCandidate, automationKind),
       automationKind,
@@ -2599,13 +2622,13 @@ function normalizeProfessionalRows(
       notes: testcaseText(row.notes),
       durationMs: '',
     };
-  }).filter((row) => row.title && row.caseId);
+  }).filter((row): row is TestcaseFileRow => Boolean(row));
 
   if (!rows.length) {
-    return normalizeCaseIds(fallbackRows.slice(0, targetCount));
+    throw new Error('Local AI returned no valid testcase rows.');
   }
 
-  return completeRowsToTarget(rows, fallbackRows, targetCount);
+  return normalizeCaseIds(rows.slice(0, MAX_TESTCASE_FILE_ROWS));
 }
 
 function buildCoverageExplanation(parsed: Record<string, unknown>, rows: TestcaseFileRow[], fallbackReason = '', targetCount = rows.length): string {
@@ -2639,53 +2662,65 @@ async function generateProfessionalTestcaseFile(
   aiExplanation: string;
   aiPrompt: string;
   aiResponse: string;
-  aiStatus: 'passed' | 'fallback';
+  aiStatus: 'passed';
   durationMs: number;
 }> {
   const startedAt = Date.now();
-  const aiPrompt = buildProfessionalTestcasePrompt(url, userRequest, suite, target);
-  const defaultFallbackRows = fallbackProfessionalRows(userRequest, url, DEFAULT_TESTCASE_FILE_ROWS);
-
+  const targetCount = requestedTestcaseCount(userRequest);
+  const aiPrompts: string[] = [];
+  const aiResponses: string[] = [];
+  const generatedRows: TestcaseFileRow[] = [];
+  const seenTitles = new Set<string>();
+  let attempts = 0;
   try {
-    const aiResponse = await askLocalAI([
-      {
-        role: 'system',
-        content: 'You are a senior QA/QC lead. Your job is to create an Excel-ready testcase file with credible coverage before any automation is considered.',
-      },
-      {
-        role: 'user',
-        content: aiPrompt,
-      },
-    ]);
-    const parsed = parseAiJsonObject(aiResponse);
-    const targetCount = recommendedCaseCountFromAi(parsed);
-    const fallbackRows = fallbackProfessionalRows(userRequest, url, targetCount);
-    const rows = normalizeProfessionalRows(parsed, fallbackRows, targetCount);
+    while (generatedRows.length < targetCount && attempts < targetCount * 2) {
+      attempts += 1;
+      const chunkCount = Math.min(5, targetCount - generatedRows.length);
+      const aiPrompt = buildProfessionalTestcasePrompt(
+        url,
+        userRequest,
+        chunkCount,
+        generatedRows.length,
+        generatedRows.map((row) => row.title),
+        suite,
+        target
+      );
+      const aiResponse = await askLocalAI([
+        { role: 'system', content: 'Senior QA lead. Follow the compact JSON schema exactly.' },
+        { role: 'user', content: aiPrompt },
+      ]);
+      const parsed = parseAiJsonObject(aiResponse);
+      const chunkRows = normalizeProfessionalRows(parsed).slice(0, chunkCount);
+      aiPrompts.push(aiPrompt);
+      aiResponses.push(aiResponse);
+      for (const row of chunkRows) {
+        const key = row.title.toLowerCase().replace(/\s+/g, ' ').trim();
+        if (!seenTitles.has(key)) {
+          seenTitles.add(key);
+          generatedRows.push(row);
+        }
+      }
+    }
+
+    if (generatedRows.length < targetCount) {
+      throw new Error(`Local AI returned only ${generatedRows.length} unique cases out of ${targetCount} requested.`);
+    }
+
+    const rows = normalizeCaseIds(generatedRows.slice(0, targetCount));
+
+    if (!rows.length) throw new Error('Local AI returned no unique testcase rows.');
 
     return {
       rows,
-      aiExplanation: buildCoverageExplanation(parsed, rows, '', targetCount),
-      aiPrompt,
-      aiResponse,
+      aiExplanation: buildCoverageExplanation({}, rows, '', targetCount),
+      aiPrompt: aiPrompts.join('\n\n--- NEXT BATCH ---\n\n'),
+      aiResponse: aiResponses.join('\n'),
       aiStatus: 'passed',
       durationMs: Date.now() - startedAt,
     };
   } catch (error) {
-    const aiResponse = error instanceof Error ? error.message : String(error);
-
-    return {
-      rows: defaultFallbackRows,
-      aiExplanation: buildCoverageExplanation(
-        {},
-        defaultFallbackRows,
-        `AI testcase JSON could not be parsed, so Passmark generated a safe QC fallback file. Reason: ${aiResponse}`,
-        DEFAULT_TESTCASE_FILE_ROWS
-      ),
-      aiPrompt,
-      aiResponse,
-      aiStatus: 'fallback',
-      durationMs: Date.now() - startedAt,
-    };
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`Local AI could not generate valid test cases: ${reason}`);
   }
 }
 
@@ -2699,6 +2734,13 @@ function renderImportedCaseBody(row: TestcaseFileRow): string {
     expect(response, 'Expected the target to return a response').not.toBeNull();
     expect(response?.status(), 'Expected no server error').toBeLessThan(500);
     await expect(page.locator('body')).toBeVisible();`;
+    case 'page_load_performance':
+      return `    const startedAt = Date.now();
+    const response = await openTarget(page);
+    const elapsedMs = Date.now() - startedAt;
+    expect(response, 'Expected the target to return a response').not.toBeNull();
+    expect(response?.status(), 'Expected no server error').toBeLessThan(500);
+    expect(elapsedMs, 'Expected page load to complete within 10 seconds').toBeLessThan(10000);`;
     case 'title_exists':
       return `    await openTarget(page);
     await expect.poll(async () => (await page.title()).trim().length, { timeout: 10000 }).toBeGreaterThan(0);`;
@@ -2719,6 +2761,13 @@ function renderImportedCaseBody(row: TestcaseFileRow): string {
     await expect(metaDescription).toHaveCount(1);
     const content = await metaDescription.getAttribute('content');
     expect(content?.trim().length || 0).toBeGreaterThan(0);`;
+    case 'meta_description_length':
+      return `    await openTarget(page);
+    const metaDescription = page.locator('meta[name="description"]');
+    await expect(metaDescription).toHaveCount(1);
+    const contentLength = (await metaDescription.getAttribute('content'))?.trim().length || 0;
+    expect(contentLength, 'Expected meta description to contain at least 50 characters').toBeGreaterThanOrEqual(50);
+    expect(contentLength, 'Expected meta description to contain no more than 160 characters').toBeLessThanOrEqual(160);`;
     case 'canonical_exists':
       return `    await openTarget(page);
     const canonical = page.locator('link[rel="canonical"]');
@@ -2751,6 +2800,12 @@ function renderImportedCaseBody(row: TestcaseFileRow): string {
     });
     await openTarget(page);
     expect(failedImages).toEqual([]);`;
+    case 'image_alt_text':
+      return `    await openTarget(page);
+    const images = page.locator('img');
+    const imageCount = await images.count();
+    const missingAlt = await images.evaluateAll((elements) => elements.filter((image) => !image.hasAttribute('alt')).length);
+    expect(missingAlt, \`Expected every image to have an alt attribute (checked \${imageCount} images)\`).toBe(0);`;
     case 'no_console_errors':
       return `    const consoleErrors: string[] = [];
     page.on('console', (message) => {
@@ -3096,6 +3151,7 @@ async function runPlaywright(
           PASSMARK_AUTH_PASSWORD: auth?.password || '',
         },
         maxBuffer: 1024 * 1024 * 10,
+        timeout: 90000,
       }
     );
 
@@ -3284,9 +3340,18 @@ async function runPlaywrightProgressively(
     throw new Error('No generated test cases were found in the Playwright spec.');
   }
 
+  if (job.cancelRequested) {
+    await updateRunSummaryFromResults(job.runId, 'cancelled', Date.now() - startedAt);
+    return;
+  }
+
   const audit = await collectSeoAuditValues(job.url, job.auth);
 
   for (const plannedCase of plannedCases) {
+    if (job.cancelRequested) {
+      await updateRunSummaryFromResults(job.runId, 'cancelled', Date.now() - startedAt);
+      return;
+    }
     const runningCase: TestCaseDetail = {
       ...plannedCase.testCase,
       status: 'running',
@@ -3332,6 +3397,11 @@ async function runPlaywrightProgressively(
     };
 
     await updateProgressiveCase(plannedCase.id, caseWithEvidence, plannedCase.index, job.runId);
+
+    if (job.cancelRequested) {
+      await updateRunSummaryFromResults(job.runId, 'cancelled', Date.now() - startedAt);
+      return;
+    }
     writeRawRunData(job.runId, {
       stdout,
       stderr,
@@ -3437,8 +3507,10 @@ async function createQueuedRun(job: RunQueueJob): Promise<TestRun> {
       id: job.runId,
       projectId: job.context.projectId,
       suiteId: job.context.suiteId,
+      environmentId: job.context.environmentId,
       targetId: job.context.targetId,
-      url: job.url,
+      packId: job.context.packId,
+      url: job.displayUrl || job.url,
       status: 'queued',
       userRequest: job.userRequest || '',
       artifacts: job.testcaseFilePath || job.testcaseExcelFileName || job.testcaseDocFileName
@@ -3466,7 +3538,9 @@ async function createQueuedRun(job: RunQueueJob): Promise<TestRun> {
     include: {
       project: true,
       suite: true,
+      environment: true,
       target: true,
+      pack: true,
       results: true,
     },
   });
@@ -3499,6 +3573,15 @@ async function executeRunQueueJob(job: RunQueueJob) {
     const result = job.importedCases?.length
       ? renderImportedCsvSpec(job.url, job.importedCases, job.runId, job.auth)
       : await generateSpecForRun(job.url, job.userRequest, job.auth, suite);
+
+    if (job.cancelRequested) {
+      await prisma.testRun.update({
+        where: { id: job.runId },
+        data: { status: 'cancelled' },
+      });
+      return;
+    }
+
     await runPlaywrightProgressively(job, result, result.outputPath);
   } catch (error) {
     await failRun(job.runId, error);
@@ -3526,6 +3609,24 @@ class InMemoryRunQueue {
       count: this.queued.length + this.running.size,
       concurrency: this.concurrency,
     };
+  }
+
+  cancel(runId: string) {
+    const queuedIndex = this.queued.findIndex((job) => job.runId === runId);
+
+    if (queuedIndex >= 0) {
+      this.queued.splice(queuedIndex, 1);
+      return { cancelled: true, state: 'queued' as const };
+    }
+
+    const runningJob = this.running.get(runId);
+
+    if (runningJob) {
+      runningJob.cancelRequested = true;
+      return { cancelled: true, state: 'running' as const };
+    }
+
+    return { cancelled: false, state: 'missing' as const };
   }
 
   private drain() {
@@ -3568,7 +3669,7 @@ async function cancelInterruptedRuns() {
 function serveStatic(request: http.IncomingMessage, response: http.ServerResponse) {
   const requestUrl = new URL(request.url || '/', `http://localhost:${port}`);
   const pathname = requestUrl.pathname === '/' ? '/index.html' : requestUrl.pathname;
-  const filePath = path.normalize(path.join(publicDir, pathname));
+  let filePath = path.normalize(path.join(publicDir, pathname));
 
   if (!filePath.startsWith(publicDir)) {
     sendError(response, 403, 'Forbidden');
@@ -3576,8 +3677,12 @@ function serveStatic(request: http.IncomingMessage, response: http.ServerRespons
   }
 
   if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
-    sendError(response, 404, 'Not found');
-    return;
+    if (!path.extname(pathname)) {
+      filePath = path.join(publicDir, 'index.html');
+    } else {
+      sendError(response, 404, 'Not found');
+      return;
+    }
   }
 
   const ext = path.extname(filePath);
@@ -3599,6 +3704,116 @@ const server = http.createServer(async (request, response) => {
   const requestUrl = new URL(request.url || '/', `http://localhost:${port}`);
 
   try {
+    if (request.method === 'GET' && requestUrl.pathname === '/api/config') {
+      sendJson(response, 200, readRuntimeConfigSummary());
+      return;
+    }
+
+    if (request.method === 'GET' && requestUrl.pathname === '/api/ai/status') {
+      sendJson(response, 200, await getLocalAIStatus());
+      return;
+    }
+
+    if (request.method === 'POST' && requestUrl.pathname === '/api/ai/test') {
+      const startedAt = Date.now();
+      const reply = await askLocalAI([{ role: 'user', content: 'Reply with exactly: PASSMARK_AI_READY' }]);
+      sendJson(response, 200, {
+        ok: reply.includes('PASSMARK_AI_READY'),
+        model: getConfiguredLocalAIModel(),
+        durationMs: Date.now() - startedAt,
+        reply: reply.slice(0, 200),
+      });
+      return;
+    }
+
+    if (request.method === 'POST' && requestUrl.pathname === '/api/ai/unload') {
+      sendJson(response, 200, await unloadLocalAIModel());
+      return;
+    }
+
+    if (request.method === 'GET' && requestUrl.pathname === '/api/environments') {
+      const projectId = requestUrl.searchParams.get('projectId');
+      sendJson(response, 200, await prisma.environment.findMany({
+        where: projectId ? { projectId } : undefined,
+        orderBy: { createdAt: 'asc' },
+      }));
+      return;
+    }
+
+    if (request.method === 'GET' && requestUrl.pathname === '/api/test-packs') {
+      const projectId = requestUrl.searchParams.get('projectId');
+      const packs = await prisma.testPack.findMany({
+        where: projectId ? { projectId } : undefined,
+        orderBy: [{ archived: 'asc' }, { updatedAt: 'desc' }],
+      });
+      sendJson(response, 200, packs.map(dbPackToApiPack));
+      return;
+    }
+
+    if (request.method === 'POST' && requestUrl.pathname === '/api/test-packs') {
+      const body = await readBody(request);
+      const pack = await prisma.testPack.create({ data: normalizePackInput(body) });
+      sendJson(response, 201, dbPackToApiPack(pack));
+      return;
+    }
+
+    if (requestUrl.pathname.startsWith('/api/test-packs/')) {
+      const id = decodeURIComponent(requestUrl.pathname.replace('/api/test-packs/', ''));
+      const existing = await prisma.testPack.findUnique({ where: { id } });
+      if (!existing) {
+        sendError(response, 404, 'Test Pack not found.');
+        return;
+      }
+      if (request.method === 'PUT') {
+        const body = await readBody(request);
+        const pack = await prisma.testPack.update({ where: { id }, data: normalizePackInput(body, existing) });
+        sendJson(response, 200, dbPackToApiPack(pack));
+        return;
+      }
+      if (request.method === 'DELETE') {
+        const pack = await prisma.testPack.update({ where: { id }, data: { archived: true } });
+        sendJson(response, 200, dbPackToApiPack(pack));
+        return;
+      }
+    }
+
+    if (request.method === 'GET' && requestUrl.pathname === '/api/test-cycles') {
+      const projectId = requestUrl.searchParams.get('projectId');
+      const cycles = await prisma.testCycle.findMany({
+        where: projectId ? { projectId } : undefined,
+        orderBy: { updatedAt: 'desc' },
+      });
+      sendJson(response, 200, cycles.map(dbCycleToApiCycle));
+      return;
+    }
+
+    if (request.method === 'POST' && requestUrl.pathname === '/api/test-cycles') {
+      const body = await readBody(request);
+      const cycle = await prisma.testCycle.create({ data: normalizeCycleInput(body) });
+      sendJson(response, 201, dbCycleToApiCycle(cycle));
+      return;
+    }
+
+    if (requestUrl.pathname.startsWith('/api/test-cycles/')) {
+      const id = decodeURIComponent(requestUrl.pathname.replace('/api/test-cycles/', ''));
+      const existing = await prisma.testCycle.findUnique({ where: { id } });
+      if (!existing) {
+        sendError(response, 404, 'Test Cycle not found.');
+        return;
+      }
+      if (request.method === 'PUT') {
+        const body = await readBody(request);
+        const cycle = await prisma.testCycle.update({ where: { id }, data: normalizeCycleInput(body, existing) });
+        sendJson(response, 200, dbCycleToApiCycle(cycle));
+        return;
+      }
+      if (request.method === 'DELETE') {
+        const cycle = await prisma.testCycle.update({ where: { id }, data: { status: 'archived' } });
+        sendJson(response, 200, dbCycleToApiCycle(cycle));
+        return;
+      }
+    }
+
     if (request.method === 'GET' && requestUrl.pathname === '/api/projects') {
       sendJson(response, 200, await prisma.project.findMany({ orderBy: { createdAt: 'desc' } }));
       return;
@@ -3620,7 +3835,8 @@ const server = http.createServer(async (request, response) => {
         },
       });
       await createDefaultTargetForProject(project);
-      await createDefaultSuiteForProject(project.id);
+      const suite = await createDefaultSuiteForProject(project.id);
+      await ensureDefaultWorkspaceForProject(project.id, suite.id);
       sendJson(response, 201, project);
       return;
     }
@@ -3708,11 +3924,14 @@ const server = http.createServer(async (request, response) => {
       }
 
       const cases = await prisma.testCase.findMany({
-        where: { suiteId },
+        where: {
+          suiteId,
+          ...(requestUrl.searchParams.get('includeDisabled') === 'true' ? {} : { enabled: true }),
+        },
         orderBy: { code: 'asc' },
       });
 
-      sendJson(response, 200, cases);
+      sendJson(response, 200, cases.map(dbTestCaseToApiTestCase));
       return;
     }
 
@@ -3720,7 +3939,9 @@ const server = http.createServer(async (request, response) => {
       const body = await readBody(request);
       const caseInput = await normalizeDbTestCaseInput(body);
       const testCase = await prisma.testCase.create({ data: caseInput });
-      sendJson(response, 201, testCase);
+      await syncWorkspaceForSuite(testCase.suiteId);
+      await addCaseIdsToPack(body.packId, [testCase.id]);
+      sendJson(response, 201, dbTestCaseToApiTestCase(testCase));
       return;
     }
 
@@ -3740,12 +3961,14 @@ const server = http.createServer(async (request, response) => {
           where: { id },
           data: caseInput,
         });
-        sendJson(response, 200, testCase);
+        await syncWorkspaceForSuite(testCase.suiteId);
+        sendJson(response, 200, dbTestCaseToApiTestCase(testCase));
         return;
       }
 
       if (request.method === 'DELETE') {
         const deletedCase = await prisma.testCase.delete({ where: { id } });
+        await syncWorkspaceForSuite(deletedCase.suiteId);
         sendJson(response, 200, deletedCase);
         return;
       }
@@ -3829,12 +4052,43 @@ const server = http.createServer(async (request, response) => {
         include: {
           project: true,
           suite: true,
+          environment: true,
           target: true,
+          pack: true,
           results: { orderBy: { caseCode: 'asc' } },
           artifacts: true,
         },
       });
       sendJson(response, 200, runs.map((run) => toRunSummary(dbRunToApiRun(run))));
+      return;
+    }
+
+    const cancelRunMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/cancel$/);
+    if (request.method === 'POST' && cancelRunMatch) {
+      const id = decodeURIComponent(cancelRunMatch[1]);
+      const run = await prisma.testRun.findUnique({ where: { id } });
+
+      if (!run) {
+        sendError(response, 404, 'Run not found');
+        return;
+      }
+
+      if (!['queued', 'running'].includes(run.status)) {
+        sendError(response, 409, `Run is already ${run.status}.`);
+        return;
+      }
+
+      const cancellation = runQueue.cancel(id);
+      await prisma.testRun.update({
+        where: { id },
+        data: {
+          status: 'cancelled',
+          stderr: run.status === 'running'
+            ? 'Cancellation requested. The current Playwright case may finish before the worker stops.'
+            : 'Run was cancelled before execution.',
+        },
+      });
+      sendJson(response, 200, { id, status: 'cancelled', cancellation });
       return;
     }
 
@@ -3877,7 +4131,9 @@ const server = http.createServer(async (request, response) => {
         include: {
           project: true,
           suite: true,
+          environment: true,
           target: true,
+          pack: true,
           results: { orderBy: { caseCode: 'asc' } },
           artifacts: true,
         },
@@ -3895,10 +4151,14 @@ const server = http.createServer(async (request, response) => {
     if (request.method === 'POST' && requestUrl.pathname === '/api/testcase-files/generate') {
       const body = await readBody(request);
       const { project, suite, target } = await resolveProjectSuiteTargetContext(body.projectId, body.suiteId, body.targetId);
-      const url = resolveRunUrl(body.url, project, target);
+      const displayUrl = resolveRunUrl(body.url, project, target);
+      const runEnvironment = await ensureRunEnvironment(project?.id, body.environment || project?.environment, displayUrl);
+      const url = runnerReachableUrl(displayUrl, normalizeEnvironment(runEnvironment?.name || body.environment || project?.environment));
       const userRequest = buildSuiteUserRequest(typeof body.userRequest === 'string' ? body.userRequest : '', suite);
       const result = await generateProfessionalTestcaseFile(url, userRequest, suite, target);
       const rows = result.rows;
+      const persistedCaseIds = await persistWorkspaceRows(suite?.id, rows, true);
+      await addCaseIdsToPack(body.packId, persistedCaseIds);
       const file = writeTestcaseCsvFile(rows, 'ai-testcases');
       const officeFiles = writeOfficeCompanionFiles(rows, 'ai-testcases');
       const historyRun = await saveTestcaseFileHistory({
@@ -3918,6 +4178,7 @@ const server = http.createServer(async (request, response) => {
           targetId: target?.id,
           targetName: target?.name,
           targetType: target?.type,
+          packId: typeof body.packId === 'string' ? body.packId : undefined,
         },
       });
 
@@ -3948,6 +4209,7 @@ const server = http.createServer(async (request, response) => {
         csvContent: file.csvContent,
         aiExplanation: result.aiExplanation,
         rows,
+        persistedCaseIds,
         cases: rows.map(rowToPreviewCase),
         historyRun: toRunSummary(historyRun),
       });
@@ -3960,6 +4222,8 @@ const server = http.createServer(async (request, response) => {
       const url = resolveRunUrl(body.url, project, target);
       const csvContent = typeof body.csvContent === 'string' ? body.csvContent : '';
       const rows = testcaseRowsFromCsv(csvContent);
+      const persistedCaseIds = await persistWorkspaceRows(suite?.id, rows);
+      await addCaseIdsToPack(body.packId, persistedCaseIds);
       const file = writeTestcaseCsvFile(rows, 'imported-testcases');
       const officeFiles = writeOfficeCompanionFiles(rows, 'imported-testcases');
       const historyRun = await saveTestcaseFileHistory({
@@ -3979,6 +4243,7 @@ const server = http.createServer(async (request, response) => {
           targetId: target?.id,
           targetName: target?.name,
           targetType: target?.type,
+          packId: typeof body.packId === 'string' ? body.packId : undefined,
         },
       });
 
@@ -3989,6 +4254,7 @@ const server = http.createServer(async (request, response) => {
         docDownloadUrl: officeFiles.docDownloadUrl,
         csvContent: file.csvContent,
         rows,
+        persistedCaseIds,
         cases: rows.map(rowToPreviewCase),
         historyRun: toRunSummary(historyRun),
       });
@@ -3998,7 +4264,9 @@ const server = http.createServer(async (request, response) => {
     if (request.method === 'POST' && requestUrl.pathname === '/api/testcase-files/run') {
       const body = await readBody(request);
       const { project, suite, target } = await resolveProjectSuiteTargetContext(body.projectId, body.suiteId, body.targetId);
-      const url = resolveRunUrl(body.url, project, target);
+      const displayUrl = resolveRunUrl(body.url, project, target);
+      const runEnvironment = await ensureRunEnvironment(project?.id, body.environment || project?.environment, displayUrl);
+      const url = runnerReachableUrl(displayUrl, normalizeEnvironment(runEnvironment?.name || body.environment || project?.environment));
       const csvContent = typeof body.csvContent === 'string' ? body.csvContent : '';
       const importedCases = testcaseRowsFromCsv(csvContent);
       const auth = normalizeAuth(body.auth);
@@ -4008,6 +4276,7 @@ const server = http.createServer(async (request, response) => {
       const job: RunQueueJob = {
         runId: newId('run'),
         url,
+        displayUrl,
         userRequest: `Imported testcase file: ${fileName}`,
         auth,
         importedCases,
@@ -4024,6 +4293,8 @@ const server = http.createServer(async (request, response) => {
           targetId: target?.id,
           targetName: target?.name,
           targetType: target?.type,
+          environmentId: runEnvironment?.id,
+          packId: typeof body.packId === 'string' ? body.packId : undefined,
         },
       };
       const run = await createQueuedRun(job);
@@ -4040,7 +4311,9 @@ const server = http.createServer(async (request, response) => {
     if (request.method === 'POST' && requestUrl.pathname === '/api/generate') {
       const body = await readBody(request);
       const { project, suite, target } = await resolveProjectSuiteTargetContext(body.projectId, body.suiteId, body.targetId);
-      const url = resolveRunUrl(body.url, project, target);
+      const displayUrl = resolveRunUrl(body.url, project, target);
+      const runEnvironment = await ensureRunEnvironment(project?.id, body.environment || project?.environment, displayUrl);
+      const url = runnerReachableUrl(displayUrl, normalizeEnvironment(runEnvironment?.name || body.environment || project?.environment));
       const userRequest = buildSuiteUserRequest(typeof body.userRequest === 'string' ? body.userRequest : '', suite);
       const auth = normalizeAuth(body.auth);
       const result = await generateSpecForRun(url, userRequest, auth, suite);
@@ -4066,12 +4339,15 @@ const server = http.createServer(async (request, response) => {
     if (request.method === 'POST' && requestUrl.pathname === '/api/run') {
       const body = await readBody(request);
       const { project, suite, target } = await resolveProjectSuiteTargetContext(body.projectId, body.suiteId, body.targetId);
-      const url = resolveRunUrl(body.url, project, target);
+      const displayUrl = resolveRunUrl(body.url, project, target);
+      const runEnvironment = await ensureRunEnvironment(project?.id, body.environment || project?.environment, displayUrl);
+      const url = runnerReachableUrl(displayUrl, normalizeEnvironment(runEnvironment?.name || body.environment || project?.environment));
       const userRequest = buildSuiteUserRequest(typeof body.userRequest === 'string' ? body.userRequest : '', suite);
       const auth = normalizeAuth(body.auth);
       const job: RunQueueJob = {
         runId: newId('run'),
         url,
+        displayUrl,
         userRequest,
         auth,
         context: {
@@ -4083,6 +4359,8 @@ const server = http.createServer(async (request, response) => {
           targetId: target?.id,
           targetName: target?.name,
           targetType: target?.type,
+          environmentId: runEnvironment?.id,
+          packId: typeof body.packId === 'string' ? body.packId : undefined,
         },
       };
       const run = await createQueuedRun(job);
@@ -4112,7 +4390,7 @@ ensureDefaultData()
   .then(cancelInterruptedRuns)
   .then(() => {
     server.listen(port, () => {
-      console.log(`Passmark AI web UI: http://localhost:${port}`);
+      console.log(`Passmark TestOps server: http://localhost:${port}`);
     });
   })
   .catch((error) => {

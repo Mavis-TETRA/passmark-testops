@@ -22,7 +22,7 @@
 | Viết testcase nhanh nhưng vẫn đúng chuẩn QC | AI tạo file testcase theo cấu trúc Objective, Step, Expected Result, Priority, Actual Result, Pass/Fail |
 | Tester cần review trước khi chạy auto | Xuất CSV, Excel-compatible `.xls`, Word-compatible `.doc` |
 | Một project có nhiều luồng kiểm thử nhỏ | Project là nhóm lớn, Test Suite là từng item/luồng riêng giống thread |
-| Không muốn phụ thuộc API AI bên ngoài | Dùng Ollama local với model mặc định `qwen2.5-coder:7b` |
+| Không muốn phụ thuộc API AI bên ngoài | Dùng Ollama local với model mặc định `qwen2.5-coder:3b` |
 | Máy triển khai tài nguyên thấp | Giới hạn RAM/GPU, context, token, thread và số model loaded |
 | Cần bằng chứng khi fail | Playwright tự chụp screenshot và ghi actual result vào file kết quả |
 
@@ -153,7 +153,7 @@ Docker Compose sẽ chạy:
 | --- | --- |
 | `postgres` | Database chính |
 | `ollama` | Local AI server |
-| `ollama-model` | Job pull model `qwen2.5-coder:7b`, chạy xong tự dừng |
+| `ollama-model` | Job pull model `qwen2.5-coder:3b`, chạy xong tự dừng |
 | `app` | Passmark TestOps web app |
 
 > `ollama-model` dừng sau khi pull model là bình thường. Container cần chạy liên tục là `postgres`, `ollama`, và `app`.
@@ -187,7 +187,7 @@ DATABASE_URL=postgresql://passmark:passmark@localhost:5432/passmark
 LOCAL_AI_PROVIDER=ollama
 LOCAL_AI_BASE_URL=http://localhost:11434
 LOCAL_AI_API_KEY=ollama
-LOCAL_AI_MODEL=qwen2.5-coder:7b
+LOCAL_AI_MODEL=qwen2.5-coder:3b
 LOCAL_AI_TIMEOUT_MS=180000
 LOCAL_AI_MAX_TOKENS=1536
 LOCAL_AI_CONTEXT_TOKENS=4096
@@ -209,7 +209,7 @@ Bạn không cần tự đổi giá trị này trong Compose vì đã được c
 Model mặc định:
 
 ```text
-qwen2.5-coder:7b
+qwen2.5-coder:3b
 ```
 
 Cấu hình tiết kiệm tài nguyên:
@@ -277,7 +277,7 @@ docker compose up -d postgres
 
 ### AI trả JSON lỗi hoặc thiếu case
 
-Hệ thống có fallback để không làm hỏng flow. Cấu hình mặc định `qwen2.5-coder:7b` được khóa quanh ngân sách Ollama 8 GB, chỉ nạp 1 model, context vừa phải và parallel thấp để không chạy lố RAM/GPU.
+Hệ thống có fallback để không làm hỏng flow. Cấu hình mặc định `qwen2.5-coder:3b` giới hạn Ollama ở 5 GB RAM, chỉ nạp 1 model, context vừa phải và parallel thấp để máy 16 GB vẫn còn tài nguyên cho IDE và trình duyệt.
 
 ## Nguyên tắc phát triển
 

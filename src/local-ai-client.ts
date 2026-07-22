@@ -94,6 +94,66 @@ export function getConfiguredLocalAIModel(): string {
   return process.env.LOCAL_AI_MODEL?.trim() || 'not-configured';
 }
 
+export async function getLocalAIStatus(): Promise<Record<string, unknown>> {
+  const config = readLocalAIConfig();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Math.min(config.timeoutMs, 5000));
+
+  try {
+    const endpoint = config.provider === 'ollama' ? '/api/tags' : '/models';
+    const response = await fetch(`${config.baseUrl}${endpoint}`, {
+      signal: controller.signal,
+      headers: config.provider === 'openai-compatible'
+        ? { Authorization: `Bearer ${config.apiKey}` }
+        : undefined,
+    });
+    const data = response.ok ? await response.json() as Record<string, unknown> : {};
+    const models = config.provider === 'ollama'
+      ? (Array.isArray(data.models) ? data.models : [])
+      : (Array.isArray(data.data) ? data.data : []);
+
+    return {
+      online: response.ok,
+      provider: config.provider,
+      baseUrl: config.baseUrl,
+      model: config.model,
+      models,
+      message: response.ok ? 'Local AI is reachable.' : `Local AI returned HTTP ${response.status}.`,
+    };
+  } catch (error) {
+    return {
+      online: false,
+      provider: config.provider,
+      baseUrl: config.baseUrl,
+      model: config.model,
+      models: [],
+      message: error instanceof Error ? error.message : String(error),
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export async function unloadLocalAIModel(): Promise<Record<string, unknown>> {
+  const config = readLocalAIConfig();
+
+  if (config.provider !== 'ollama') {
+    throw new Error('Model unload is only available for Ollama.');
+  }
+
+  const response = await fetch(`${config.baseUrl}/api/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: config.model, keep_alive: 0 }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Unable to unload Ollama model: HTTP ${response.status}.`);
+  }
+
+  return { ok: true, model: config.model, message: 'Model unloaded from memory.' };
+}
+
 export async function askLocalAI(messages: ChatMessage[]): Promise<string> {
   const config = readLocalAIConfig();
   const controller = new AbortController();
@@ -105,6 +165,11 @@ export async function askLocalAI(messages: ChatMessage[]): Promise<string> {
     }
 
     return await askOpenAICompatible(config, messages, controller.signal);
+  } catch (error) {
+    if (error instanceof Error && (error.name === 'AbortError' || /aborted/i.test(error.message))) {
+      throw new Error(`Local AI timed out after ${Math.round(config.timeoutMs / 1000)} seconds. Try Quick coverage again or use a faster model.`);
+    }
+    throw error;
   } finally {
     clearTimeout(timeout);
   }
