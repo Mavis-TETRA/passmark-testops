@@ -154,12 +154,25 @@ export async function unloadLocalAIModel(): Promise<Record<string, unknown>> {
   return { ok: true, model: config.model, message: 'Model unloaded from memory.' };
 }
 
-export async function askLocalAI(messages: ChatMessage[]): Promise<string> {
+export async function askLocalAI(
+  messages: ChatMessage[],
+  options: { signal?: AbortSignal } = {}
+): Promise<string> {
   const config = readLocalAIConfig();
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, config.timeoutMs);
+  const cancel = () => controller.abort();
+  options.signal?.addEventListener('abort', cancel, { once: true });
 
   try {
+    if (options.signal?.aborted) {
+      controller.abort();
+    }
+
     if (config.provider === 'ollama') {
       return await askOllama(config, messages, controller.signal);
     }
@@ -167,11 +180,15 @@ export async function askLocalAI(messages: ChatMessage[]): Promise<string> {
     return await askOpenAICompatible(config, messages, controller.signal);
   } catch (error) {
     if (error instanceof Error && (error.name === 'AbortError' || /aborted/i.test(error.message))) {
+      if (options.signal?.aborted && !timedOut) {
+        throw new Error('Local AI request was cancelled.');
+      }
       throw new Error(`Local AI timed out after ${Math.round(config.timeoutMs / 1000)} seconds. Try Quick coverage again or use a faster model.`);
     }
     throw error;
   } finally {
     clearTimeout(timeout);
+    options.signal?.removeEventListener('abort', cancel);
   }
 }
 
