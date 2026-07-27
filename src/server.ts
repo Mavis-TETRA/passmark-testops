@@ -207,6 +207,44 @@ type GeneratedSpecResult = {
   aiExplanation?: string;
 };
 
+type TestcaseGenerationProgress = {
+  generatedCount: number;
+  targetCount: number;
+  batch: number;
+  estimatedBatches: number;
+  attempt: number;
+  maxAttempts: number;
+};
+
+type TestcaseGenerationJobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+
+type TestcaseGenerationJob = {
+  id: string;
+  status: TestcaseGenerationJobStatus;
+  project?: Project;
+  suite?: TestSuite;
+  target?: TestTarget;
+  packId?: string;
+  url: string;
+  userRequest: string;
+  targetCount: number;
+  generatedCount: number;
+  persistedCaseIds: string[];
+  batch: number;
+  estimatedBatches: number;
+  attempt: number;
+  maxAttempts: number;
+  message: string;
+  error?: string;
+  createdAt: string;
+  startedAt?: string;
+  updatedAt: string;
+  durationMs: number;
+  cancelRequested: boolean;
+  abortController: AbortController;
+  result?: Record<string, unknown>;
+};
+
 type TestcaseFileRow = {
   caseId: string;
   projectId?: string;
@@ -2920,7 +2958,12 @@ async function generateProfessionalTestcaseFile(
   url: string,
   userRequest: string,
   suite?: TestSuite,
-  target?: TestTarget
+  target?: TestTarget,
+  options: {
+    signal?: AbortSignal;
+    onProgress?: (progress: TestcaseGenerationProgress) => void | Promise<void>;
+    onBatch?: (rows: TestcaseFileRow[], progress: TestcaseGenerationProgress) => void | Promise<void>;
+  } = {}
 ): Promise<{
   rows: TestcaseFileRow[];
   aiExplanation: string;
@@ -2935,9 +2978,25 @@ async function generateProfessionalTestcaseFile(
   const aiResponses: string[] = [];
   const generatedRows: TestcaseFileRow[] = [];
   const seenTitles = new Set<string>();
+  const estimatedBatches = Math.max(1, Math.ceil(targetCount / 5));
+  const maxAttempts = estimatedBatches + 2;
   let attempts = 0;
+  let lastBatchError = '';
   try {
-    while (generatedRows.length < targetCount && attempts < targetCount * 2) {
+    await options.onProgress?.({
+      generatedCount: 0,
+      targetCount,
+      batch: 0,
+      estimatedBatches,
+      attempt: 0,
+      maxAttempts,
+    });
+
+    while (generatedRows.length < targetCount && attempts < maxAttempts) {
+      if (options.signal?.aborted) {
+        throw new Error('Test case generation was cancelled.');
+      }
+
       attempts += 1;
       const chunkCount = Math.min(5, targetCount - generatedRows.length);
       const aiPrompt = buildProfessionalTestcasePrompt(
@@ -2949,25 +3008,64 @@ async function generateProfessionalTestcaseFile(
         suite,
         target
       );
-      const aiResponse = await askLocalAI([
-        { role: 'system', content: 'Senior QA lead. Follow the compact JSON schema exactly.' },
-        { role: 'user', content: aiPrompt },
-      ]);
-      const parsed = parseAiJsonObject(aiResponse);
-      const chunkRows = normalizeProfessionalRows(parsed).slice(0, chunkCount);
       aiPrompts.push(aiPrompt);
-      aiResponses.push(aiResponse);
+
+      await options.onProgress?.({
+        generatedCount: generatedRows.length,
+        targetCount,
+        batch: attempts,
+        estimatedBatches,
+        attempt: attempts,
+        maxAttempts,
+      });
+
+      let chunkRows: TestcaseFileRow[] = [];
+      try {
+        const aiResponse = await askLocalAI([
+          { role: 'system', content: 'Senior QA lead. Follow the compact JSON schema exactly.' },
+          { role: 'user', content: aiPrompt },
+        ], { signal: options.signal });
+        aiResponses.push(aiResponse);
+        const parsed = parseAiJsonObject(aiResponse);
+        chunkRows = normalizeProfessionalRows(parsed).slice(0, chunkCount);
+      } catch (batchError) {
+        if (options.signal?.aborted) throw batchError;
+        lastBatchError = batchError instanceof Error ? batchError.message : String(batchError);
+        continue;
+      }
+
+      const acceptedRows: TestcaseFileRow[] = [];
       for (const row of chunkRows) {
         const key = row.title.toLowerCase().replace(/\s+/g, ' ').trim();
         if (!seenTitles.has(key)) {
+          const acceptedRow = {
+            ...row,
+            caseId: `TC-${String(generatedRows.length + 1).padStart(3, '0')}`,
+          };
           seenTitles.add(key);
-          generatedRows.push(row);
+          generatedRows.push(acceptedRow);
+          acceptedRows.push(acceptedRow);
         }
       }
+
+      const progress = {
+        generatedCount: generatedRows.length,
+        targetCount,
+        batch: attempts,
+        estimatedBatches,
+        attempt: attempts,
+        maxAttempts,
+      };
+      if (acceptedRows.length) {
+        await options.onBatch?.(acceptedRows, progress);
+      }
+      await options.onProgress?.(progress);
+      lastBatchError = '';
     }
 
     if (generatedRows.length < targetCount) {
-      throw new Error(`Local AI returned only ${generatedRows.length} unique cases out of ${targetCount} requested.`);
+      const detail = lastBatchError ? ` Last error: ${lastBatchError}` : '';
+      throw new Error(`Local AI returned only ${generatedRows.length} unique cases out of ${targetCount} requested after ${attempts} attempts.${detail}`);
     }
 
     const rows = normalizeCaseIds(generatedRows.slice(0, targetCount));
@@ -4008,6 +4106,213 @@ class InMemoryRunQueue {
 
 const runQueue = new InMemoryRunQueue(executeRunQueueJob);
 
+const testcaseGenerationJobs = new Map<string, TestcaseGenerationJob>();
+const testcaseGenerationQueue: TestcaseGenerationJob[] = [];
+let testcaseGenerationRunning = false;
+
+function testcaseGenerationJobResponse(job: TestcaseGenerationJob): Record<string, unknown> {
+  const percent = job.targetCount
+    ? Math.min(100, Math.round((job.generatedCount / job.targetCount) * 100))
+    : 0;
+
+  return {
+    id: job.id,
+    status: job.status,
+    targetCount: job.targetCount,
+    generatedCount: job.generatedCount,
+    persistedCaseIds: job.persistedCaseIds,
+    batch: job.batch,
+    estimatedBatches: job.estimatedBatches,
+    attempt: job.attempt,
+    maxAttempts: job.maxAttempts,
+    percent,
+    message: job.message,
+    error: job.error,
+    createdAt: job.createdAt,
+    startedAt: job.startedAt,
+    updatedAt: job.updatedAt,
+    durationMs: job.durationMs,
+    result: job.result,
+  };
+}
+
+function updateTestcaseGenerationJob(
+  job: TestcaseGenerationJob,
+  updates: Partial<Pick<
+    TestcaseGenerationJob,
+    'status' | 'generatedCount' | 'persistedCaseIds' | 'batch' | 'attempt' | 'message' | 'error' | 'durationMs' | 'result'
+  >>
+) {
+  Object.assign(job, updates);
+  job.updatedAt = new Date().toISOString();
+  if (job.startedAt) {
+    job.durationMs = Date.now() - Date.parse(job.startedAt);
+  }
+}
+
+async function executeTestcaseGenerationJob(job: TestcaseGenerationJob) {
+  job.startedAt = new Date().toISOString();
+  updateTestcaseGenerationJob(job, {
+    status: 'running',
+    message: `Preparing batch 1 of approximately ${job.estimatedBatches}.`,
+  });
+
+  try {
+    const result = await generateProfessionalTestcaseFile(
+      job.url,
+      job.userRequest,
+      job.suite,
+      job.target,
+      {
+        signal: job.abortController.signal,
+        onProgress: (progress) => {
+          updateTestcaseGenerationJob(job, {
+            generatedCount: progress.generatedCount,
+            batch: progress.batch,
+            attempt: progress.attempt,
+            message: progress.generatedCount
+              ? `${progress.generatedCount} of ${progress.targetCount} cases saved. Processing the next batch.`
+              : `Generating batch ${Math.max(1, progress.batch)} of approximately ${progress.estimatedBatches}.`,
+          });
+        },
+        onBatch: async (rows, progress) => {
+          if (job.cancelRequested || job.abortController.signal.aborted) {
+            throw new Error('Test case generation was cancelled.');
+          }
+          const persistedCaseIds = await persistWorkspaceRows(job.suite?.id, rows, true);
+          await addCaseIdsToPack(job.packId, persistedCaseIds);
+          updateTestcaseGenerationJob(job, {
+            generatedCount: progress.generatedCount,
+            persistedCaseIds: [...job.persistedCaseIds, ...persistedCaseIds],
+            batch: progress.batch,
+            attempt: progress.attempt,
+            message: `${progress.generatedCount} of ${progress.targetCount} cases saved.`,
+          });
+        },
+      }
+    );
+
+    if (job.cancelRequested || job.abortController.signal.aborted) {
+      throw new Error('Test case generation was cancelled.');
+    }
+
+    const rows = result.rows;
+    const file = writeTestcaseCsvFile(rows, 'ai-testcases');
+    const officeFiles = writeOfficeCompanionFiles(rows, 'ai-testcases');
+    const historyRun = await saveTestcaseFileHistory({
+      url: job.url,
+      rows,
+      filePath: file.filePath,
+      excelFileName: officeFiles.excelFileName,
+      docFileName: officeFiles.docFileName,
+      aiExplanation: result.aiExplanation,
+      userRequest: `Generated testcase file: ${job.userRequest}`,
+      context: {
+        projectId: job.project?.id,
+        projectName: job.project?.name,
+        suiteId: job.suite?.id,
+        suiteName: job.suite?.name,
+        suiteType: job.suite?.type,
+        targetId: job.target?.id,
+        targetName: job.target?.name,
+        targetType: job.target?.type,
+        packId: job.packId,
+      },
+    });
+
+    await prisma.aIRequestLog.create({
+      data: {
+        id: newId('ai-log'),
+        provider: 'local-ai',
+        model: getConfiguredLocalAIModel(),
+        prompt: result.aiPrompt,
+        response: result.aiResponse,
+        status: result.aiStatus,
+        durationMs: result.durationMs,
+      },
+    });
+
+    updateTestcaseGenerationJob(job, {
+      status: 'completed',
+      generatedCount: rows.length,
+      message: `${rows.length} test cases generated and saved.`,
+      result: {
+        url: job.url,
+        projectId: job.project?.id,
+        projectName: job.project?.name,
+        suiteId: job.suite?.id,
+        suiteName: job.suite?.name,
+        targetId: job.target?.id,
+        targetName: job.target?.name,
+        fileName: file.fileName,
+        downloadUrl: `/api/testcase-files/download/${encodeURIComponent(file.fileName)}`,
+        excelDownloadUrl: officeFiles.excelDownloadUrl,
+        docDownloadUrl: officeFiles.docDownloadUrl,
+        aiExplanation: result.aiExplanation,
+        persistedCaseIds: job.persistedCaseIds,
+        historyRun: toRunSummary(historyRun),
+      },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const cancelled = job.cancelRequested
+      || job.abortController.signal.aborted
+      || /cancelled/i.test(message);
+    updateTestcaseGenerationJob(job, {
+      status: cancelled ? 'cancelled' : 'failed',
+      message: cancelled
+        ? `Generation cancelled. ${job.generatedCount} partial cases were kept.`
+        : `Generation failed after saving ${job.generatedCount} partial cases.`,
+      error: cancelled ? undefined : message,
+    });
+  }
+
+  const cleanupTimer = setTimeout(() => {
+    testcaseGenerationJobs.delete(job.id);
+  }, 60 * 60 * 1000);
+  cleanupTimer.unref();
+}
+
+async function drainTestcaseGenerationQueue() {
+  if (testcaseGenerationRunning) return;
+  testcaseGenerationRunning = true;
+  try {
+    while (testcaseGenerationQueue.length) {
+      const job = testcaseGenerationQueue.shift();
+      if (!job || job.status === 'cancelled') continue;
+      await executeTestcaseGenerationJob(job);
+    }
+  } finally {
+    testcaseGenerationRunning = false;
+  }
+}
+
+function enqueueTestcaseGeneration(job: TestcaseGenerationJob) {
+  testcaseGenerationJobs.set(job.id, job);
+  testcaseGenerationQueue.push(job);
+  void drainTestcaseGenerationQueue();
+}
+
+function cancelTestcaseGeneration(job: TestcaseGenerationJob) {
+  if (['completed', 'failed', 'cancelled'].includes(job.status)) return;
+  job.cancelRequested = true;
+  job.abortController.abort();
+  if (job.status === 'queued') {
+    updateTestcaseGenerationJob(job, {
+      status: 'cancelled',
+      message: 'Generation cancelled before it started.',
+    });
+    const cleanupTimer = setTimeout(() => {
+      testcaseGenerationJobs.delete(job.id);
+    }, 60 * 60 * 1000);
+    cleanupTimer.unref();
+  } else {
+    updateTestcaseGenerationJob(job, {
+      message: `Cancelling generation. ${job.generatedCount} partial cases have been kept.`,
+    });
+  }
+}
+
 async function cancelInterruptedRuns() {
   await prisma.testRun.updateMany({
     where: {
@@ -4537,6 +4842,27 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
+    const testcaseGenerationMatch = requestUrl.pathname.match(/^\/api\/testcase-files\/generate\/([^/]+)(\/cancel)?$/);
+    if (testcaseGenerationMatch) {
+      const jobId = decodeURIComponent(testcaseGenerationMatch[1]);
+      const job = testcaseGenerationJobs.get(jobId);
+      if (!job) {
+        sendError(response, 404, 'Test case generation job not found.');
+        return;
+      }
+
+      if (request.method === 'GET' && !testcaseGenerationMatch[2]) {
+        sendJson(response, 200, testcaseGenerationJobResponse(job));
+        return;
+      }
+
+      if (request.method === 'POST' && testcaseGenerationMatch[2] === '/cancel') {
+        cancelTestcaseGeneration(job);
+        sendJson(response, 200, testcaseGenerationJobResponse(job));
+        return;
+      }
+    }
+
     if (request.method === 'POST' && requestUrl.pathname === '/api/testcase-files/generate') {
       const body = await readBody(request);
       const { project, suite, target } = await resolveProjectSuiteTargetContext(body.projectId, body.suiteId, body.targetId);
@@ -4544,64 +4870,33 @@ const server = http.createServer(async (request, response) => {
       const runEnvironment = await ensureRunEnvironment(project?.id, body.environment || project?.environment, displayUrl);
       const url = runnerReachableUrl(displayUrl, normalizeEnvironment(runEnvironment?.name || body.environment || project?.environment));
       const userRequest = buildSuiteUserRequest(typeof body.userRequest === 'string' ? body.userRequest : '', suite);
-      const result = await generateProfessionalTestcaseFile(url, userRequest, suite, target);
-      const rows = result.rows;
-      const persistedCaseIds = await persistWorkspaceRows(suite?.id, rows, true);
-      await addCaseIdsToPack(body.packId, persistedCaseIds);
-      const file = writeTestcaseCsvFile(rows, 'ai-testcases');
-      const officeFiles = writeOfficeCompanionFiles(rows, 'ai-testcases');
-      const historyRun = await saveTestcaseFileHistory({
+      const targetCount = requestedTestcaseCount(userRequest);
+      const now = new Date().toISOString();
+      const job: TestcaseGenerationJob = {
+        id: newId('generation'),
+        status: 'queued',
+        project,
+        suite,
+        target,
+        packId: typeof body.packId === 'string' ? body.packId : undefined,
         url,
-        rows,
-        filePath: file.filePath,
-        excelFileName: officeFiles.excelFileName,
-        docFileName: officeFiles.docFileName,
-        aiExplanation: result.aiExplanation,
-        userRequest: `Generated testcase file: ${userRequest}`,
-        context: {
-          projectId: project?.id,
-          projectName: project?.name,
-          suiteId: suite?.id,
-          suiteName: suite?.name,
-          suiteType: suite?.type,
-          targetId: target?.id,
-          targetName: target?.name,
-          targetType: target?.type,
-          packId: typeof body.packId === 'string' ? body.packId : undefined,
-        },
-      });
-
-      await prisma.aIRequestLog.create({
-        data: {
-          id: newId('ai-log'),
-          provider: 'local-ai',
-          model: getConfiguredLocalAIModel(),
-          prompt: result.aiPrompt,
-          response: result.aiResponse,
-          status: result.aiStatus,
-          durationMs: result.durationMs,
-        },
-      });
-
-      sendJson(response, 200, {
-        url,
-        projectId: project?.id,
-        projectName: project?.name,
-        suiteId: suite?.id,
-        suiteName: suite?.name,
-        targetId: target?.id,
-        targetName: target?.name,
-        fileName: file.fileName,
-        downloadUrl: `/api/testcase-files/download/${encodeURIComponent(file.fileName)}`,
-        excelDownloadUrl: officeFiles.excelDownloadUrl,
-        docDownloadUrl: officeFiles.docDownloadUrl,
-        csvContent: file.csvContent,
-        aiExplanation: result.aiExplanation,
-        rows,
-        persistedCaseIds,
-        cases: rows.map(rowToPreviewCase),
-        historyRun: toRunSummary(historyRun),
-      });
+        userRequest,
+        targetCount,
+        generatedCount: 0,
+        persistedCaseIds: [],
+        batch: 0,
+        estimatedBatches: Math.max(1, Math.ceil(targetCount / 5)),
+        attempt: 0,
+        maxAttempts: Math.max(1, Math.ceil(targetCount / 5)) + 2,
+        message: 'Queued for Local AI generation.',
+        createdAt: now,
+        updatedAt: now,
+        durationMs: 0,
+        cancelRequested: false,
+        abortController: new AbortController(),
+      };
+      enqueueTestcaseGeneration(job);
+      sendJson(response, 202, testcaseGenerationJobResponse(job));
       return;
     }
 

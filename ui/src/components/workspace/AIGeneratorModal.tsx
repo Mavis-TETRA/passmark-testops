@@ -1,7 +1,8 @@
-import React, { useEffect, useState } from 'react';
-import { Loader2Icon, SparklesIcon, WifiOffIcon } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Clock3Icon, Loader2Icon, SparklesIcon, SquareIcon, WifiOffIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import { useApp } from '../../context/AppContext';
+import type { TestcaseGenerationOptions, TestcaseGenerationProgress } from '../../context/AppContext';
 import { cn } from '../../lib/cn';
 import type { TestType } from '../../lib/types';
 import { Button } from '../ui/Button';
@@ -16,6 +17,13 @@ const COVERAGE: Array<{ key: Coverage; description: string; count: number }> = [
   { key: 'Comprehensive', description: 'Broad negative and edge coverage', count: 44 },
 ];
 
+function formatDuration(milliseconds: number): string {
+  const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes ? `${minutes}m ${String(seconds).padStart(2, '0')}s` : `${seconds}s`;
+}
+
 export function AIGeneratorModal({
   open,
   onClose,
@@ -23,7 +31,7 @@ export function AIGeneratorModal({
 }: {
   open: boolean;
   onClose: () => void;
-  onConfirm: (count: number, request: string) => Promise<number>;
+  onConfirm: (count: number, request: string, options?: TestcaseGenerationOptions) => Promise<number>;
 }) {
   const { aiStatus, checkAI } = useApp();
   const [source, setSource] = useState('');
@@ -31,22 +39,51 @@ export function AIGeneratorModal({
   const [scope, setScope] = useState<Scope>('Smoke');
   const [testType, setTestType] = useState<TestType>('Functional');
   const [saving, setSaving] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+  const [progress, setProgress] = useState<TestcaseGenerationProgress | null>(null);
+  const [elapsedMs, setElapsedMs] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const controllerRef = useRef<AbortController | null>(null);
   const suggestedCount = COVERAGE.find((item) => item.key === coverage)?.count || 8;
 
   useEffect(() => {
     if (open) void checkAI();
   }, [open]);
 
+  useEffect(() => {
+    if (!saving) return;
+    const startedAt = Date.now() - (progress?.durationMs || 0);
+    const updateElapsed = () => setElapsedMs(Date.now() - startedAt);
+    updateElapsed();
+    const timer = window.setInterval(updateElapsed, 1000);
+    return () => window.clearInterval(timer);
+  }, [saving]);
+
+  const cancelGeneration = () => {
+    if (!saving || cancelling) return;
+    setCancelling(true);
+    controllerRef.current?.abort();
+  };
+
   const close = () => {
-    if (saving) return;
+    if (saving) {
+      cancelGeneration();
+      return;
+    }
     setSource('');
+    setProgress(null);
+    setElapsedMs(0);
     setError(null);
     onClose();
   };
 
   const generate = async () => {
+    const controller = new AbortController();
+    controllerRef.current = controller;
     setSaving(true);
+    setCancelling(false);
+    setProgress(null);
+    setElapsedMs(0);
     setError(null);
     try {
       const request = [
@@ -56,14 +93,19 @@ export function AIGeneratorModal({
         `Coverage level: ${coverage}.`,
         `Generate approximately ${suggestedCount} focused test cases.`,
       ].join('\n');
-      const saved = await onConfirm(suggestedCount, request);
+      const saved = await onConfirm(suggestedCount, request, {
+        signal: controller.signal,
+        onProgress: setProgress,
+      });
       toast.success(`${saved} AI-generated test cases saved.`);
       setSource('');
       onClose();
     } catch (generateError) {
       setError(generateError instanceof Error ? generateError.message : String(generateError));
     } finally {
+      controllerRef.current = null;
       setSaving(false);
+      setCancelling(false);
     }
   };
 
@@ -76,10 +118,12 @@ export function AIGeneratorModal({
       title="Generate test cases"
       subtitle="Generate and save real cases with the configured local AI."
       footer={<>
-        <Button variant="ghost" onClick={close} disabled={saving}>Cancel</Button>
+        {saving
+          ? <Button variant="danger" onClick={cancelGeneration} disabled={cancelling}><SquareIcon className="h-3.5 w-3.5" />{cancelling ? 'Cancelling…' : 'Cancel generation'}</Button>
+          : <Button variant="ghost" onClick={close}>{progress?.status === 'cancelled' ? 'Close' : 'Cancel'}</Button>}
         <Button variant="primary" onClick={() => void generate()} disabled={saving || !source.trim() || !aiStatus.online}>
           {saving ? <Loader2Icon className="h-4 w-4 animate-spin" /> : <SparklesIcon className="h-4 w-4" />}
-          {saving ? 'Generating…' : `Generate ~${suggestedCount}`}
+          {saving ? `${progress?.generatedCount || 0}/${progress?.targetCount || suggestedCount} generated` : `Generate ~${suggestedCount}`}
         </Button>
       </>}
     >
@@ -88,6 +132,29 @@ export function AIGeneratorModal({
           {aiStatus.checking ? <Loader2Icon className="h-4 w-4 shrink-0 animate-spin" /> : <WifiOffIcon className="h-4 w-4 shrink-0" />}
           <div><span className="font-medium text-ink">{aiStatus.checking ? 'Checking local AI…' : aiStatus.online ? `Local AI ready · ${aiStatus.model}` : 'Local AI unavailable'}</span><p className="mt-0.5 text-ink-2">{aiStatus.message}</p></div>
         </div>
+
+        {(saving || progress) && <div aria-live="polite" className="rounded-lg border border-accent/30 bg-accent-soft p-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex min-w-0 items-center gap-2">
+              {saving && <Loader2Icon className="h-4 w-4 shrink-0 animate-spin text-accent" />}
+              <span className="truncate text-sm font-medium text-ink">
+                {cancelling ? 'Cancelling generation…' : progress?.message || 'Starting Local AI generation…'}
+              </span>
+            </div>
+            <span className="shrink-0 text-sm font-semibold text-accent">
+              {progress?.generatedCount || 0}/{progress?.targetCount || suggestedCount}
+            </span>
+          </div>
+          <div className="mt-3 h-2 overflow-hidden rounded-full bg-surface-2">
+            <div className="h-full rounded-full bg-accent transition-[width] duration-500" style={{ width: `${progress?.percent || 0}%` }} />
+          </div>
+          <div className="mt-2 grid grid-cols-3 gap-2 text-2xs text-ink-3">
+            <span>Batch <strong className="text-ink-2">{Math.max(1, progress?.batch || 1)}/{progress?.estimatedBatches || Math.ceil(suggestedCount / 5)}</strong></span>
+            <span>Attempt <strong className="text-ink-2">{progress?.attempt || 0}/{progress?.maxAttempts || Math.ceil(suggestedCount / 5) + 2}</strong></span>
+            <span className="flex items-center justify-end gap-1"><Clock3Icon className="h-3 w-3" /><strong className="text-ink-2">{formatDuration(Math.max(elapsedMs, progress?.durationMs || 0))}</strong></span>
+          </div>
+          {(progress?.generatedCount || 0) > 0 && <p className="mt-2 text-2xs text-ink-3">Valid cases are already saved and visible in the workspace. Cancelling keeps these partial results.</p>}
+        </div>}
 
         <div>
           <label className="mb-1.5 block text-xs font-medium text-ink-2">Task, bug report, or acceptance criteria</label>
@@ -124,7 +191,7 @@ export function AIGeneratorModal({
         </div>
 
         {error && <div role="alert" className="rounded-lg border border-[rgb(var(--fail))]/25 bg-[rgb(var(--fail-soft))] p-3 text-sm text-[rgb(var(--fail))]">{error}</div>}
-        <p className="text-xs text-ink-3">Cases are saved only after the backend receives valid output from local AI. No demo or fallback cases are inserted.</p>
+        <p className="text-xs text-ink-3">Each valid batch is saved immediately. No demo or fallback cases are inserted.</p>
       </div>
     </Modal>
   );
