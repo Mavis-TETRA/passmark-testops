@@ -183,9 +183,9 @@ export function WorkspacePage() {
       {viewMode === 'qa' && selected.size > 0 && <div className="fixed bottom-4 left-1/2 z-30 flex max-w-[calc(100vw-2rem)] -translate-x-1/2 flex-wrap items-center gap-1 rounded-xl bg-ink px-2 py-1.5 text-canvas shadow-pop"><span className="px-2 text-xs font-medium">{selected.size} selected</span><Bulk label="Run" icon={PlayIcon} onClick={() => setRunConfirm(true)} /><Bulk label="Add to Smoke" icon={ZapIcon} onClick={() => { if (smokePack) addCasesToPack(smokePack.id, selectedCases.map((testCase) => testCase.id)); toast.success('Cases added to Smoke.'); }} /><Bulk label="Add to Regression" icon={RefreshCwIcon} onClick={() => { if (regressionPack) addCasesToPack(regressionPack.id, selectedCases.map((testCase) => testCase.id)); toast.success('Cases added to Regression.'); }} /><button onClick={() => setSelected(new Set())} aria-label="Clear selection" className="rounded p-1.5 hover:bg-white/10"><XIcon className="h-4 w-4" /></button></div>}
 
       <TestCaseDrawer testCase={openCase} onClose={() => setOpenCase(null)} onArchive={setArchiveTarget} index={openIndex} total={visible.length} onNext={() => openIndex < visible.length - 1 && setOpenCase(visible[openIndex + 1])} onPrev={() => openIndex > 0 && setOpenCase(visible[openIndex - 1])} cycle={currentCycle} />
-      <AIGeneratorModal open={aiOpen} onClose={() => setAiOpen(false)} onConfirm={async (count, request) => {
+      <AIGeneratorModal open={aiOpen} onClose={() => setAiOpen(false)} onConfirm={async (count, request, options) => {
         if (!activePack) throw new Error('Select a Test Pack before generating cases.');
-        return addGeneratedCases(activePack.id, count, request);
+        return addGeneratedCases(activePack.id, count, request, options);
       }} />
       <CreateCaseModal open={createOpen} onClose={() => setCreateOpen(false)} onCreate={async (input) => { const created = await createTestCase(input, activePack?.id); toast.success(`${created.code || created.id} created.`); }} />
       <EditCaseModal open={Boolean(editTarget)} testCase={editTarget} onClose={() => setEditTarget(null)} onSave={async (testCase, input) => {

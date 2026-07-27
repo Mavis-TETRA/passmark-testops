@@ -18,6 +18,27 @@ import type {
 export type RunTestType = 'all' | 'web_ui' | 'api' | 'accessibility' | 'seo' | 'performance' | 'security';
 export type RunProfile = 'quick' | 'standard' | 'comprehensive';
 
+export interface TestcaseGenerationProgress {
+  id: string;
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  targetCount: number;
+  generatedCount: number;
+  persistedCaseIds: string[];
+  batch: number;
+  estimatedBatches: number;
+  attempt: number;
+  maxAttempts: number;
+  percent: number;
+  message: string;
+  error?: string;
+  durationMs: number;
+}
+
+export interface TestcaseGenerationOptions {
+  signal?: AbortSignal;
+  onProgress?: (progress: TestcaseGenerationProgress) => void;
+}
+
 export interface RunRequest {
   projectId: string;
   environment: EnvironmentName;
@@ -59,7 +80,7 @@ interface AppState {
   updatePack: (id: string, updates: Partial<Pick<TestPack, 'name' | 'description' | 'caseIds' | 'archived'>>) => void;
   duplicatePack: (id: string) => TestPack | null;
   addCasesToPack: (packId: string, caseIds: string[]) => void;
-  addGeneratedCases: (packId: string, count: number, request?: string) => Promise<number>;
+  addGeneratedCases: (packId: string, count: number, request?: string, options?: TestcaseGenerationOptions) => Promise<number>;
   createTestCase: (input: Partial<TestCase>, packId?: string | null) => Promise<TestCase>;
   updateTestCase: (id: string, input: Partial<TestCase>) => Promise<TestCase>;
   importCases: (csvContent: string, fileName: string, packId: string | null) => Promise<number>;
@@ -502,16 +523,55 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (pack) updatePack(packId, { caseIds: Array.from(new Set([...pack.caseIds, ...caseIds])) });
   };
 
-  const addGeneratedCases = async (packId: string, count: number, request = 'Generate professional test cases for the selected Test Pack.'): Promise<number> => {
+  const addGeneratedCases = async (
+    packId: string,
+    count: number,
+    request = 'Generate professional test cases for the selected Test Pack.',
+    options: TestcaseGenerationOptions = {}
+  ): Promise<number> => {
     const pack = testPacks.find((item) => item.id === packId);
     const targetId = pack?.defaultTargetId || currentProject.defaultTargetId;
-    const result = await post<{ persistedCaseIds?: string[] }>('/api/testcase-files/generate', {
+    let progress = await post<TestcaseGenerationProgress>('/api/testcase-files/generate', {
       projectId: currentProject.id, suiteId: suitesByProject.current[currentProject.id], targetId, packId,
       url: getTargetUrl(currentProject.id, targetId, pack?.defaultEnvironment || environment),
       userRequest: `${request}\nCoverage target: approximately ${count} cases.`,
     });
-    await refresh();
-    return result.persistedCaseIds?.length || 0;
+    options.onProgress?.(progress);
+    let lastRenderedCount = 0;
+    let cancellationSent = false;
+
+    const requestCancellation = () => {
+      if (cancellationSent) return;
+      cancellationSent = true;
+      void post<TestcaseGenerationProgress>(
+        `/api/testcase-files/generate/${encodeURIComponent(progress.id)}/cancel`,
+        {}
+      ).catch(() => undefined);
+    };
+    options.signal?.addEventListener('abort', requestCancellation, { once: true });
+
+    try {
+      while (!['completed', 'failed', 'cancelled'].includes(progress.status)) {
+        if (options.signal?.aborted) requestCancellation();
+        await new Promise((resolve) => window.setTimeout(resolve, 1200));
+        progress = await get<TestcaseGenerationProgress>(
+          `/api/testcase-files/generate/${encodeURIComponent(progress.id)}`
+        );
+        options.onProgress?.(progress);
+        if (progress.generatedCount > lastRenderedCount) {
+          lastRenderedCount = progress.generatedCount;
+          await refresh();
+        }
+      }
+
+      await refresh();
+      if (progress.status === 'completed') {
+        return progress.persistedCaseIds?.length || progress.generatedCount || 0;
+      }
+      throw new Error(progress.error || progress.message || 'Test case generation did not complete.');
+    } finally {
+      options.signal?.removeEventListener('abort', requestCancellation);
+    }
   };
 
   const createTestCase = async (input: Partial<TestCase>, packId?: string | null): Promise<TestCase> => {
