@@ -7,6 +7,7 @@ import path from 'path';
  * https://github.com/motdotla/dotenv
  */
 dotenv.config({ path: path.resolve(__dirname, '.env') });
+const capturePassedScreenshots = process.env.PASSMARK_CAPTURE_PASSED_SCREENSHOTS !== 'false';
 
 /**
  * See https://playwright.dev/docs/test-configuration.
@@ -28,7 +29,7 @@ export default defineConfig({
     /* Base URL to use in actions like `await page.goto('')`. */
     // baseURL: 'http://localhost:3000',
 
-    screenshot: 'only-on-failure',
+    screenshot: capturePassedScreenshots ? 'on' : 'only-on-failure',
     video: 'retain-on-failure',
     trace: 'retain-on-failure',
   },

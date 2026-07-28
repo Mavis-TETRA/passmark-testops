@@ -28,10 +28,14 @@ export function AIGeneratorModal({
   open,
   onClose,
   onConfirm,
+  packName,
+  initialSource = '',
 }: {
   open: boolean;
   onClose: () => void;
   onConfirm: (count: number, request: string, options?: TestcaseGenerationOptions) => Promise<number>;
+  packName?: string;
+  initialSource?: string;
 }) {
   const { aiStatus, checkAI } = useApp();
   const [source, setSource] = useState('');
@@ -47,8 +51,10 @@ export function AIGeneratorModal({
   const suggestedCount = COVERAGE.find((item) => item.key === coverage)?.count || 8;
 
   useEffect(() => {
-    if (open) void checkAI();
-  }, [open]);
+    if (!open) return;
+    void checkAI();
+    setSource(initialSource);
+  }, [open, initialSource]);
 
   useEffect(() => {
     if (!saving) return;
@@ -116,7 +122,7 @@ export function AIGeneratorModal({
       size="max-w-2xl"
       icon={<div className="flex h-9 w-9 items-center justify-center rounded-lg bg-accent-soft"><SparklesIcon className="h-5 w-5 text-accent" /></div>}
       title="Generate test cases"
-      subtitle="Generate and save real cases with the configured local AI."
+      subtitle={packName ? `Generate and save cases directly into “${packName}”.` : 'Generate and save real cases with the configured local AI.'}
       footer={<>
         {saving
           ? <Button variant="danger" onClick={cancelGeneration} disabled={cancelling}><SquareIcon className="h-3.5 w-3.5" />{cancelling ? 'Cancelling…' : 'Cancel generation'}</Button>
@@ -149,11 +155,12 @@ export function AIGeneratorModal({
             <div className="h-full rounded-full bg-accent transition-[width] duration-500" style={{ width: `${progress?.percent || 0}%` }} />
           </div>
           <div className="mt-2 grid grid-cols-3 gap-2 text-2xs text-ink-3">
-            <span>Batch <strong className="text-ink-2">{Math.max(1, progress?.batch || 1)}/{progress?.estimatedBatches || Math.ceil(suggestedCount / 5)}</strong></span>
-            <span>Attempt <strong className="text-ink-2">{progress?.attempt || 0}/{progress?.maxAttempts || Math.ceil(suggestedCount / 5) + 2}</strong></span>
+            <span>Batch <strong className="text-ink-2">{Math.max(1, progress?.batch || 1)}/{progress?.estimatedBatches || Math.ceil(suggestedCount / 2)}</strong></span>
+            <span>Attempt <strong className="text-ink-2">{progress?.attempt || 0}/{progress?.maxAttempts || Math.ceil(suggestedCount / 2) + 2}</strong></span>
             <span className="flex items-center justify-end gap-1"><Clock3Icon className="h-3 w-3" /><strong className="text-ink-2">{formatDuration(Math.max(elapsedMs, progress?.durationMs || 0))}</strong></span>
           </div>
-          {(progress?.generatedCount || 0) > 0 && <p className="mt-2 text-2xs text-ink-3">Valid cases are already saved and visible in the workspace. Cancelling keeps these partial results.</p>}
+          {saving && (progress?.generatedCount || 0) === 0 && elapsedMs >= 30000 && <p className="mt-2 text-2xs text-ink-3">The model is still working. Incoming response activity is shown above; you can cancel safely at any time.</p>}
+          {(progress?.generatedCount || 0) > 0 && <p className="mt-2 text-2xs text-ink-3">Valid cases are already saved in this Test Pack. Cancelling keeps these partial results.</p>}
         </div>}
 
         <div>

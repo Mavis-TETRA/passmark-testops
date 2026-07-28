@@ -10,6 +10,7 @@ import type {
   TestCase,
   TestCycle,
   TestPack,
+  PackKind,
   TestRun,
   Theme,
   ViewMode,
@@ -37,6 +38,15 @@ export interface TestcaseGenerationProgress {
 export interface TestcaseGenerationOptions {
   signal?: AbortSignal;
   onProgress?: (progress: TestcaseGenerationProgress) => void;
+}
+
+export interface CreateTestPackInput {
+  name: string;
+  description: string;
+  kind: Extract<PackKind, 'feature' | 'requirement' | 'release' | 'custom' | 'saved'>;
+  caseIds: string[];
+  defaultEnvironment?: EnvironmentName;
+  defaultTargetId?: string;
 }
 
 export interface RunRequest {
@@ -75,10 +85,11 @@ interface AppState {
   requestSmokeRun: (projectId: string) => void;
   clearSmokeIntent: () => void;
   startRun: (request: RunRequest) => Promise<TestRun>;
+  generateRunReport: (id: string) => Promise<TestRun>;
   updateRunStatus: (id: string, status: RunStatus) => void;
-  createSavedPack: (name: string, description: string, caseIds: string[]) => TestPack;
-  updatePack: (id: string, updates: Partial<Pick<TestPack, 'name' | 'description' | 'caseIds' | 'archived'>>) => void;
-  duplicatePack: (id: string) => TestPack | null;
+  createTestPack: (input: CreateTestPackInput) => Promise<TestPack>;
+  updatePack: (id: string, updates: Partial<Pick<TestPack, 'name' | 'description' | 'kind' | 'caseIds' | 'defaultEnvironment' | 'defaultTargetId' | 'archived'>>) => void;
+  duplicatePack: (id: string) => Promise<TestPack | null>;
   addCasesToPack: (packId: string, caseIds: string[]) => void;
   addGeneratedCases: (packId: string, count: number, request?: string, options?: TestcaseGenerationOptions) => Promise<number>;
   createTestCase: (input: Partial<TestCase>, packId?: string | null) => Promise<TestCase>;
@@ -183,6 +194,22 @@ function mapCase(raw: RawRecord): TestCase {
   };
 }
 
+function mapPack(pack: RawRecord): TestPack {
+  return {
+    ...pack,
+    id: String(pack.id),
+    projectId: String(pack.projectId),
+    name: String(pack.name),
+    description: String(pack.description || ''),
+    owner: String(pack.owner || 'Local QA Team'),
+    kind: pack.kind || 'custom',
+    caseIds: Array.isArray(pack.caseIds) ? pack.caseIds.map(String) : [],
+    defaultEnvironment: pack.defaultEnvironment ? environmentName(pack.defaultEnvironment) : undefined,
+    defaultTargetId: pack.defaultTargetId || undefined,
+    updatedAt: String(pack.updatedAt || new Date().toISOString()),
+  } as TestPack;
+}
+
 function mapRun(raw: RawRecord): TestRun {
   const summary = raw.summary || raw;
   const results = Array.isArray(raw.cases) ? raw.cases : Array.isArray(raw.results) ? raw.results : [];
@@ -229,6 +256,8 @@ function mapRun(raw: RawRecord): TestRun {
         hasTrace: Boolean(result.hasTrace),
         hasRawArtifact: Boolean(result.hasRawArtifact),
         evidenceUrl: typeof result.actualImage === 'string' ? result.actualImage : undefined,
+        videoUrl: typeof result.videoUrl === 'string' ? result.videoUrl : undefined,
+        traceUrl: typeof result.traceUrl === 'string' ? result.traceUrl : undefined,
       };
     }),
     errorKind: raw.errorKind,
@@ -236,6 +265,9 @@ function mapRun(raw: RawRecord): TestRun {
     resultCsvUrl: raw.resultCsvUrl || undefined,
     resultExcelUrl: raw.resultExcelUrl || undefined,
     resultDocUrl: raw.resultDocUrl || undefined,
+    resultHtmlUrl: raw.resultHtmlUrl || undefined,
+    resultPdfUrl: raw.resultPdfUrl || undefined,
+    resultZipUrl: raw.resultZipUrl || undefined,
   };
 }
 
@@ -354,19 +386,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const mappedCases = caseGroups.flat().map(mapCase);
       setProjects(mappedProjects);
       setTestCases(mappedCases);
-      setTestPacks(rawPacks.map((pack) => ({
-        ...pack,
-        id: String(pack.id),
-        projectId: String(pack.projectId),
-        name: String(pack.name),
-        description: String(pack.description || ''),
-        owner: String(pack.owner || 'Local QA Team'),
-        kind: pack.kind || 'saved',
-        caseIds: Array.isArray(pack.caseIds) ? pack.caseIds.map(String) : [],
-        defaultEnvironment: pack.defaultEnvironment ? environmentName(pack.defaultEnvironment) : undefined,
-        defaultTargetId: pack.defaultTargetId || undefined,
-        updatedAt: String(pack.updatedAt || new Date().toISOString()),
-      })) as TestPack[]);
+      setTestPacks(rawPacks.map(mapPack));
       setRuns(mappedRuns);
       setCycles(rawCycles.map((cycle) => ({ ...cycle, environment: environmentName(cycle.environment), startDate: String(cycle.startDate), dueDate: String(cycle.dueDate) })) as TestCycle[]);
       setAIStatus({ ...rawAI, checking: false });
@@ -498,24 +518,47 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const createSavedPack = (name: string, description: string, caseIds: string[]): TestPack => {
-    const pack: TestPack = { id: `pack-${Date.now()}`, projectId: currentProject.id, name, description, kind: 'saved', caseIds, owner: 'Local QA Team', updatedAt: new Date().toISOString() };
-    setTestPacks((items) => [...items, pack]);
-    void post('/api/test-packs', pack).catch((saveError) => setError(saveError instanceof Error ? saveError.message : String(saveError)));
+  const generateRunReport = async (id: string): Promise<TestRun> => {
+    const generated = mapRun(await post<RawRecord>(`/api/runs/${encodeURIComponent(id)}/report`, {}));
+    setRuns((items) => items.map((run) => run.id === id ? generated : run));
+    return generated;
+  };
+
+  const createTestPack = async (input: CreateTestPackInput): Promise<TestPack> => {
+    const created = await post<RawRecord>('/api/test-packs', {
+      projectId: currentProject.id,
+      owner: 'Local QA Team',
+      ...input,
+      defaultEnvironment: input.defaultEnvironment ? environmentValue(input.defaultEnvironment) : '',
+    });
+    const pack = mapPack(created);
+    setTestPacks((items) => [...items.filter((item) => item.id !== pack.id), pack]);
     return pack;
   };
 
-  const updatePack = (id: string, updates: Partial<Pick<TestPack, 'name' | 'description' | 'caseIds' | 'archived'>>) => {
+  const updatePack = (id: string, updates: Partial<Pick<TestPack, 'name' | 'description' | 'kind' | 'caseIds' | 'defaultEnvironment' | 'defaultTargetId' | 'archived'>>) => {
     const existing = testPacks.find((pack) => pack.id === id);
     if (!existing) return;
     const next = { ...existing, ...updates, updatedAt: new Date().toISOString() };
     setTestPacks((items) => items.map((pack) => pack.id === id ? next : pack));
-    void put(`/api/test-packs/${encodeURIComponent(id)}`, next).catch((saveError) => setError(saveError instanceof Error ? saveError.message : String(saveError)));
+    void put(`/api/test-packs/${encodeURIComponent(id)}`, {
+      ...next,
+      defaultEnvironment: next.defaultEnvironment ? environmentValue(next.defaultEnvironment) : '',
+    }).catch((saveError) => setError(saveError instanceof Error ? saveError.message : String(saveError)));
   };
 
-  const duplicatePack = (id: string) => {
+  const duplicatePack = async (id: string) => {
     const source = testPacks.find((pack) => pack.id === id);
-    return source ? createSavedPack(`${source.name} copy`, source.description, [...source.caseIds]) : null;
+    return source ? createTestPack({
+      name: `${source.name} copy`,
+      description: source.description,
+      kind: ['feature', 'requirement', 'release', 'custom', 'saved'].includes(source.kind)
+        ? source.kind as CreateTestPackInput['kind']
+        : 'custom',
+      caseIds: [...source.caseIds],
+      defaultEnvironment: source.defaultEnvironment,
+      defaultTargetId: source.defaultTargetId,
+    }) : null;
   };
 
   const addCasesToPack = (packId: string, caseIds: string[]) => {
@@ -677,7 +720,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     theme, toggleTheme: () => setTheme((value) => value === 'dark' ? 'light' : 'dark'), viewMode, setViewMode,
     loading, error, refresh, projects, createProject, currentProject, setCurrentProjectId, environment, setEnvironment,
     getTarget, getTargetUrl, setLocalTargetUrl, testCases, testPacks, runs, cycles, smokeIntent, requestSmokeRun,
-    clearSmokeIntent: () => setSmokeIntent(null), startRun, updateRunStatus, createSavedPack, updatePack, duplicatePack,
+    clearSmokeIntent: () => setSmokeIntent(null), startRun, generateRunReport, updateRunStatus, createTestPack, updatePack, duplicatePack,
     addCasesToPack, addGeneratedCases, createTestCase, updateTestCase, importCases, archiveTestCase, createCycle, updateCycle, saveManualExecution,
     aiStatus, checkAI, testAI, unloadAI,
   };

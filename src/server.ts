@@ -4,8 +4,24 @@ import dotenv from 'dotenv';
 import fs from 'fs';
 import http from 'http';
 import path from 'path';
+import { pathToFileURL } from 'url';
 import { promisify } from 'util';
 import { chromium, request as playwrightRequest } from '@playwright/test';
+import { ZipArchive } from 'archiver';
+import JSZip from 'jszip';
+import {
+  AlignmentType,
+  Document,
+  HeadingLevel,
+  ImageRun,
+  Packer,
+  Paragraph,
+  Table,
+  TableCell,
+  TableRow,
+  TextRun,
+  WidthType,
+} from 'docx';
 import { AuthConfig, generatePlaywrightTest } from '../scripts/generate-playwright-test';
 import { createDefaultSuiteForProject, createDefaultTargetForProject, ensureDefaultData, ensureDefaultWorkspaceForProject, newId, prisma } from './db';
 import { askLocalAI, getConfiguredLocalAIModel, getLocalAIStatus, unloadLocalAIModel } from './local-ai-client';
@@ -97,6 +113,9 @@ type TestRun = {
   resultCsvUrl?: string;
   resultExcelUrl?: string;
   resultDocUrl?: string;
+  resultHtmlUrl?: string;
+  resultPdfUrl?: string;
+  resultZipUrl?: string;
   testcaseCsvUrl?: string;
   testcaseExcelUrl?: string;
   testcaseDocUrl?: string;
@@ -126,6 +145,13 @@ type TestCaseDetail = {
   notes?: string;
   inputImage?: string;
   actualImage?: string;
+  videoUrl?: string;
+  traceUrl?: string;
+  attachments?: Array<{
+    name: string;
+    contentType: string;
+    path: string;
+  }>;
   defectId?: string;
   testerName?: string;
   reviewerName?: string;
@@ -214,6 +240,7 @@ type TestcaseGenerationProgress = {
   estimatedBatches: number;
   attempt: number;
   maxAttempts: number;
+  message?: string;
 };
 
 type TestcaseGenerationJobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
@@ -356,6 +383,12 @@ function readRunRawData(rawOutputPath?: string): Record<string, unknown> {
   }
 }
 
+function artifactDownloadUrl(filePath?: string): string | undefined {
+  return filePath
+    ? `/api/testcase-files/download/${encodeURIComponent(path.basename(filePath))}`
+    : undefined;
+}
+
 function dbRunToApiRun(run: any): TestRun {
   const results = Array.isArray(run.results) ? run.results : [];
   const rawData = readRunRawData(run.rawOutputPath);
@@ -367,6 +400,15 @@ function dbRunToApiRun(run: any): TestRun {
     : undefined;
   const resultDocArtifact = Array.isArray(run.artifacts)
     ? run.artifacts.find((artifact: any) => artifact.type === 'result-doc' && artifact.path)
+    : undefined;
+  const resultHtmlArtifact = Array.isArray(run.artifacts)
+    ? run.artifacts.find((artifact: any) => artifact.type === 'result-html' && artifact.path)
+    : undefined;
+  const resultPdfArtifact = Array.isArray(run.artifacts)
+    ? run.artifacts.find((artifact: any) => artifact.type === 'result-pdf' && artifact.path)
+    : undefined;
+  const resultZipArtifact = Array.isArray(run.artifacts)
+    ? run.artifacts.find((artifact: any) => artifact.type === 'result-zip' && artifact.path)
     : undefined;
   const testcaseCsvArtifact = Array.isArray(run.artifacts)
     ? run.artifacts.find((artifact: any) => artifact.type === 'testcase-csv' && artifact.path)
@@ -381,6 +423,12 @@ function dbRunToApiRun(run: any): TestRun {
   const status = supportedStatuses.includes(run.status) ? run.status : 'failed';
   const cases = results.map((result: any) => {
     const extra = parseJsonText(result.aiDiagnosis);
+    const resultArtifacts = Array.isArray(run.artifacts)
+      ? run.artifacts.filter((artifact: any) => artifact.resultId === result.id && artifact.path)
+      : [];
+    const screenshotArtifact = resultArtifacts.find((artifact: any) => ['actual-screenshot', 'screenshot'].includes(artifact.type));
+    const videoArtifact = resultArtifacts.find((artifact: any) => artifact.type === 'video');
+    const traceArtifact = resultArtifacts.find((artifact: any) => artifact.type === 'trace');
 
     return {
       title: `${result.caseCode} ${result.caseName}`.trim(),
@@ -391,7 +439,11 @@ function dbRunToApiRun(run: any): TestRun {
       actual: typeof extra.actual === 'string' ? extra.actual : result.status,
       selector: typeof extra.selector === 'string' ? extra.selector : undefined,
       inputImage: typeof extra.inputImage === 'string' ? extra.inputImage : undefined,
-      actualImage: typeof extra.actualImage === 'string' ? extra.actualImage : undefined,
+      actualImage: typeof extra.actualImage === 'string' && extra.actualImage
+        ? extra.actualImage
+        : artifactDownloadUrl(screenshotArtifact?.path),
+      videoUrl: artifactDownloadUrl(videoArtifact?.path),
+      traceUrl: artifactDownloadUrl(traceArtifact?.path),
       defectId: typeof extra.defectId === 'string' ? extra.defectId : undefined,
       code: typeof extra.code === 'string' ? extra.code : result.caseCode,
       description: typeof extra.description === 'string' ? extra.description : result.caseName,
@@ -431,15 +483,12 @@ function dbRunToApiRun(run: any): TestRun {
     stderr: run.stderr,
     errorReason: status === 'generated' ? undefined : deriveRunErrorReason(status, cases, run.stderr, run.stdout),
     historyKind: status === 'generated' ? 'testcase-file' : 'auto-test',
-    resultCsvUrl: resultCsvArtifact?.path
-      ? `/api/testcase-files/download/${encodeURIComponent(path.basename(resultCsvArtifact.path))}`
-      : undefined,
-    resultExcelUrl: resultExcelArtifact?.path
-      ? `/api/testcase-files/download/${encodeURIComponent(path.basename(resultExcelArtifact.path))}`
-      : undefined,
-    resultDocUrl: resultDocArtifact?.path
-      ? `/api/testcase-files/download/${encodeURIComponent(path.basename(resultDocArtifact.path))}`
-      : undefined,
+    resultCsvUrl: artifactDownloadUrl(resultCsvArtifact?.path),
+    resultExcelUrl: artifactDownloadUrl(resultExcelArtifact?.path),
+    resultDocUrl: artifactDownloadUrl(resultDocArtifact?.path),
+    resultHtmlUrl: artifactDownloadUrl(resultHtmlArtifact?.path),
+    resultPdfUrl: artifactDownloadUrl(resultPdfArtifact?.path),
+    resultZipUrl: artifactDownloadUrl(resultZipArtifact?.path),
     testcaseCsvUrl: testcaseCsvArtifact?.path
       ? `/api/testcase-files/download/${encodeURIComponent(path.basename(testcaseCsvArtifact.path))}`
       : results.length ? `/api/runs/${encodeURIComponent(run.id)}/testcase-source/csv` : undefined,
@@ -645,12 +694,15 @@ function normalizePackInput(value: Record<string, unknown>, existing?: any) {
     throw new Error('Project and Test Pack name are required.');
   }
 
+  const requestedKind = normalizeOptionalText(value.kind || existing?.kind) || 'custom';
+  const allowedKinds = new Set(['system', 'saved', 'all', 'manual', 'automated', 'feature', 'requirement', 'release', 'custom']);
+
   return {
     id: existing?.id || normalizeOptionalText(value.id) || newId('pack'),
     projectId,
     name,
     description: normalizeOptionalText(value.description ?? existing?.description),
-    kind: normalizeOptionalText(value.kind || existing?.kind) || 'saved',
+    kind: allowedKinds.has(requestedKind) ? requestedKind : 'custom',
     owner: normalizeOptionalText(value.owner || existing?.owner) || 'Local QA Team',
     caseIds: JSON.stringify(Array.isArray(value.caseIds) ? value.caseIds.filter((id): id is string => typeof id === 'string') : parseJsonValue(existing?.caseIds, [])),
     defaultEnvironment: normalizeOptionalText(value.defaultEnvironment ?? existing?.defaultEnvironment),
@@ -749,6 +801,9 @@ function readRuntimeConfigSummary(): Record<string, unknown> {
       minRows: MIN_TESTCASE_FILE_ROWS,
       defaultRows: DEFAULT_TESTCASE_FILE_ROWS,
       maxRows: MAX_TESTCASE_FILE_ROWS,
+      casesPerBatch: readConfigNumber('LOCAL_AI_CASES_PER_BATCH', 2),
+      batchTimeoutMs: readConfigNumber('LOCAL_AI_BATCH_TIMEOUT_MS', 90000),
+      batchMaxTokens: readConfigNumber('LOCAL_AI_BATCH_MAX_TOKENS', 512),
       csvEndpoint: 'POST /api/testcase-files/generate',
       importEndpoint: 'POST /api/testcase-files/import',
       runEndpoint: 'POST /api/testcase-files/run',
@@ -1581,6 +1636,15 @@ function extractCaseDetails(stdout: string): TestCaseDetail[] {
       const result = results[0];
       const errors = Array.isArray(result?.errors) ? (result.errors as Array<Record<string, unknown>>) : [];
       const firstError = errors[0];
+      const attachments = Array.isArray(result?.attachments)
+        ? (result.attachments as Array<Record<string, unknown>>)
+          .filter((attachment) => typeof attachment.path === 'string')
+          .map((attachment) => ({
+            name: typeof attachment.name === 'string' ? attachment.name : 'artifact',
+            contentType: typeof attachment.contentType === 'string' ? attachment.contentType : 'application/octet-stream',
+            path: String(attachment.path),
+          }))
+        : [];
 
       return {
         title: typeof spec.title === 'string' ? spec.title : 'Untitled test',
@@ -1592,6 +1656,7 @@ function extractCaseDetails(stdout: string): TestCaseDetail[] {
               : 'unknown',
         durationMs: typeof result?.duration === 'number' ? result.duration : 0,
         error: typeof firstError?.message === 'string' ? cleanOutputText(firstError.message) : undefined,
+        attachments,
       };
     });
 
@@ -2300,8 +2365,14 @@ function mimeTypeForPath(filePath: string): string {
   const ext = path.extname(filePath).toLowerCase();
   const contentTypes: Record<string, string> = {
     '.csv': 'text/csv; charset=utf-8',
+    '.html': 'text/html; charset=utf-8',
     '.xls': 'application/vnd.ms-excel; charset=utf-8',
+    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     '.doc': 'application/msword; charset=utf-8',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.pdf': 'application/pdf',
+    '.zip': 'application/zip',
+    '.webm': 'video/webm',
     '.png': 'image/png',
     '.jpg': 'image/jpeg',
     '.jpeg': 'image/jpeg',
@@ -2321,6 +2392,15 @@ function resolveImagePath(value?: string): string {
   const apiPrefix = '/api/testcase-files/download/';
   if (text.startsWith(apiPrefix)) {
     return testcaseFilePath(decodeURIComponent(text.slice(apiPrefix.length)));
+  }
+
+  const containerStoragePrefix = '/app/storage/';
+  if (text.replace(/\\/g, '/').startsWith(containerStoragePrefix)) {
+    const relativePath = text.replace(/\\/g, '/').slice(containerStoragePrefix.length);
+    const fromContainerStorage = path.join(rootDir, 'storage', ...relativePath.split('/'));
+    if (fs.existsSync(fromContainerStorage)) {
+      return fromContainerStorage;
+    }
   }
 
   const normalized = path.normalize(text);
@@ -2473,7 +2553,7 @@ function writeOfficeCompanionFiles(rows: TestcaseFileRow[], prefix: string) {
   };
 }
 
-async function writeRunResultCsv(runId: string): Promise<{ fileName: string; filePath: string; excelFileName: string; docFileName: string }> {
+async function writeRunResultCsv(runId: string): Promise<{ fileName: string; filePath: string }> {
   const results = await prisma.testResult.findMany({
     where: { runId },
     orderBy: { caseCode: 'asc' },
@@ -2523,39 +2603,517 @@ async function writeRunResultCsv(runId: string): Promise<{ fileName: string; fil
     };
   });
   const file = writeTestcaseCsvFile(rows, `results-${runId}`);
-  const officeFiles = writeOfficeCompanionFiles(rows, `results-${runId}`);
 
-  await prisma.artifact.create({
-    data: {
-      id: newId('artifact'),
+  await prisma.artifact.upsert({
+    where: { id: `${runId}-result-csv` },
+    update: { path: file.filePath },
+    create: {
+      id: `${runId}-result-csv`,
       runId,
       type: 'result-csv',
       path: file.filePath,
     },
   });
-  await prisma.artifact.createMany({
-    data: [
-      {
-        id: newId('artifact'),
-        runId,
-        type: 'result-excel',
-        path: testcaseFilePath(officeFiles.excelFileName),
-      },
-      {
-        id: newId('artifact'),
-        runId,
-        type: 'result-doc',
-        path: testcaseFilePath(officeFiles.docFileName),
-      },
-    ],
-  });
 
   return {
     fileName: file.fileName,
     filePath: file.filePath,
-    excelFileName: officeFiles.excelFileName,
-    docFileName: officeFiles.docFileName,
   };
+}
+
+type RichReportCase = {
+  id: string;
+  code: string;
+  name: string;
+  status: string;
+  durationMs: number;
+  expected: string;
+  actual: string;
+  error: string;
+  stackTrace: string;
+  module: string;
+  feature: string;
+  testType: string;
+  priority: string;
+  severity: string;
+  screenshotPath: string;
+  videoPath: string;
+  tracePath: string;
+};
+
+function richReportCases(run: any): RichReportCase[] {
+  const artifacts = Array.isArray(run.artifacts) ? run.artifacts : [];
+  return (Array.isArray(run.results) ? run.results : []).map((result: any) => {
+    const extra = parseJsonText(result.aiDiagnosis);
+    const resultArtifacts = artifacts.filter((artifact: any) => artifact.resultId === result.id);
+    const artifactPath = (types: string[]) => resultArtifacts.find((artifact: any) => types.includes(artifact.type))?.path || '';
+    const storedArtifactPath = (types: string[]) => resolveImagePath(artifactPath(types));
+
+    return {
+      id: result.id,
+      code: result.caseCode || '',
+      name: result.caseName || '',
+      status: result.status || 'unknown',
+      durationMs: Number(result.durationMs || 0),
+      expected: result.expectedResult || '',
+      actual: cleanOutputText(typeof extra.actual === 'string' ? extra.actual : result.errorMessage || result.status),
+      error: cleanOutputText(result.errorMessage || ''),
+      stackTrace: cleanOutputText(result.stackTrace || ''),
+      module: typeof extra.module === 'string' ? extra.module : '',
+      feature: typeof extra.feature === 'string' ? extra.feature : '',
+      testType: typeof extra.testType === 'string' ? extra.testType : '',
+      priority: typeof extra.priority === 'string' ? extra.priority : '',
+      severity: typeof extra.severity === 'string' ? extra.severity : '',
+      screenshotPath: storedArtifactPath(['actual-screenshot', 'screenshot']) || resolveImagePath(typeof extra.actualImage === 'string' ? extra.actualImage : ''),
+      videoPath: storedArtifactPath(['video']),
+      tracePath: storedArtifactPath(['trace']),
+    };
+  });
+}
+
+function reportStatusClass(status: string): string {
+  if (status === 'passed') return 'passed';
+  if (status === 'skipped') return 'skipped';
+  return 'failed';
+}
+
+function buildRunReportHtml(run: any, cases: RichReportCase[]): string {
+  const passed = Number(run.passed || cases.filter((item) => item.status === 'passed').length);
+  const failed = Number(run.failed || cases.filter((item) => item.status === 'failed').length);
+  const skipped = Number(run.skipped || cases.filter((item) => item.status === 'skipped').length);
+  const completed = passed + failed;
+  const passRate = completed ? Math.round((passed / completed) * 1000) / 10 : 0;
+  const startedAt = new Date(run.createdAt || Date.now());
+  const title = `${run.pack?.name || run.suite?.name || 'Automated Test'} Report`;
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>${htmlEscape(title)}</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f3f5f8; color: #172033; font: 14px/1.5 Arial, sans-serif; }
+    main { width: min(1120px, calc(100% - 32px)); margin: 28px auto; }
+    .hero, .case { background: #fff; border: 1px solid #dce1e8; border-radius: 14px; box-shadow: 0 4px 16px rgba(22,32,51,.05); }
+    .hero { padding: 26px; }
+    h1 { margin: 0; font-size: 26px; }
+    h2 { margin: 0; font-size: 17px; }
+    .muted { color: #697386; }
+    .meta, .stats { display: grid; gap: 10px; margin-top: 20px; }
+    .meta { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .stats { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+    .tile { padding: 12px; background: #f7f8fa; border: 1px solid #e5e8ed; border-radius: 10px; }
+    .tile small { display: block; color: #697386; }
+    .tile strong { display: block; margin-top: 3px; font-size: 18px; }
+    .section-title { margin: 28px 0 10px; font-size: 18px; }
+    .case { margin-bottom: 12px; overflow: hidden; break-inside: avoid; }
+    .case-head { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-bottom: 1px solid #e5e8ed; }
+    .case-code { font: 12px Consolas, monospace; color: #697386; }
+    .case-name { flex: 1; font-weight: 700; }
+    .status { border-radius: 999px; padding: 3px 9px; font-size: 11px; font-weight: 700; text-transform: uppercase; }
+    .status.passed { background: #dcfce7; color: #15803d; }
+    .status.failed { background: #fee2e2; color: #b91c1c; }
+    .status.skipped { background: #eef2f7; color: #526071; }
+    .case-body { padding: 16px; }
+    .details { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .field { padding: 10px 12px; border-radius: 9px; background: #f7f8fa; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .field b { display: block; margin-bottom: 4px; font-size: 11px; color: #697386; text-transform: uppercase; }
+    .error { margin-top: 10px; border-left: 3px solid #dc2626; background: #fff1f2; color: #9f1239; padding: 10px 12px; white-space: pre-wrap; }
+    .evidence { margin-top: 12px; }
+    .evidence img { display: block; max-width: 100%; max-height: 520px; border: 1px solid #dce1e8; border-radius: 9px; object-fit: contain; }
+    .artifact-links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+    .artifact-links span { border-radius: 6px; background: #eef2ff; color: #4338ca; padding: 5px 8px; font-size: 12px; }
+    @media (max-width: 760px) { .meta, .stats { grid-template-columns: repeat(2, 1fr); } .details { grid-template-columns: 1fr; } }
+    @media print { body { background: #fff; } main { width: 100%; margin: 0; } .hero, .case { box-shadow: none; } }
+  </style>
+</head>
+<body>
+<main>
+  <section class="hero">
+    <div class="muted">Passmark TestOps · Automated execution report</div>
+    <h1>${htmlEscape(title)}</h1>
+    <div class="meta">
+      <div class="tile"><small>Project</small><strong>${htmlEscape(run.project?.name || 'Unassigned')}</strong></div>
+      <div class="tile"><small>Environment</small><strong>${htmlEscape(run.environment?.name || 'Not set')}</strong></div>
+      <div class="tile"><small>Target</small><strong>${htmlEscape(run.target?.name || run.url || 'Not set')}</strong></div>
+      <div class="tile"><small>Started</small><strong>${htmlEscape(startedAt.toLocaleString())}</strong></div>
+    </div>
+    <div class="stats">
+      <div class="tile"><small>Total</small><strong>${cases.length}</strong></div>
+      <div class="tile"><small>Passed</small><strong style="color:#15803d">${passed}</strong></div>
+      <div class="tile"><small>Failed</small><strong style="color:#b91c1c">${failed}</strong></div>
+      <div class="tile"><small>Skipped</small><strong>${skipped}</strong></div>
+      <div class="tile"><small>Pass rate</small><strong>${passRate}%</strong></div>
+    </div>
+  </section>
+  <h2 class="section-title">Test case results</h2>
+  ${cases.map((testCase) => `
+    <article class="case">
+      <div class="case-head">
+        <span class="case-code">${htmlEscape(testCase.code)}</span>
+        <span class="case-name">${htmlEscape(testCase.name)}</span>
+        <span class="status ${reportStatusClass(testCase.status)}">${htmlEscape(testCase.status)}</span>
+        <span class="muted">${Math.round(testCase.durationMs / 100) / 10}s</span>
+      </div>
+      <div class="case-body">
+        <div class="details">
+          <div class="field"><b>Expected</b>${htmlMultiline(testCase.expected || 'Not captured')}</div>
+          <div class="field"><b>Actual</b>${htmlMultiline(testCase.actual || 'Not captured')}</div>
+        </div>
+        ${testCase.error ? `<div class="error"><strong>Error</strong><br>${htmlMultiline(testCase.error)}</div>` : ''}
+        ${testCase.screenshotPath ? `<div class="evidence"><b>Screenshot evidence</b>${officeImage(testCase.screenshotPath)}</div>` : ''}
+        ${(testCase.videoPath || testCase.tracePath) ? `<div class="artifact-links">${testCase.videoPath ? '<span>Video attached in Evidence ZIP</span>' : ''}${testCase.tracePath ? '<span>Playwright trace attached in Evidence ZIP</span>' : ''}</div>` : ''}
+      </div>
+    </article>
+  `).join('')}
+</main>
+</body>
+</html>`;
+}
+
+function writeRichHtmlReport(runId: string, html: string, stamp: number): { fileName: string; filePath: string } {
+  const fileName = `report-${runId}-${stamp}.html`;
+  const filePath = testcaseFilePath(fileName);
+  fs.writeFileSync(filePath, html, 'utf-8');
+  return { fileName, filePath };
+}
+
+async function writePdfReport(runId: string, htmlPath: string, stamp: number): Promise<{ fileName: string; filePath: string }> {
+  const fileName = `report-${runId}-${stamp}.pdf`;
+  const filePath = testcaseFilePath(fileName);
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.goto(pathToFileURL(htmlPath).href, { waitUntil: 'load' });
+    await page.pdf({
+      path: filePath,
+      format: 'A4',
+      printBackground: true,
+      margin: { top: '12mm', right: '10mm', bottom: '12mm', left: '10mm' },
+    });
+  } finally {
+    await browser.close();
+  }
+  return { fileName, filePath };
+}
+
+type XlsxCellValue = string | number | { value: string | number; style: number };
+
+function xmlEscape(value: unknown): string {
+  return String(value ?? '')
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+function xlsxColumnName(index: number): string {
+  let result = '';
+  let value = index;
+  while (value > 0) {
+    value -= 1;
+    result = String.fromCharCode(65 + (value % 26)) + result;
+    value = Math.floor(value / 26);
+  }
+  return result;
+}
+
+function xlsxSheet(rows: XlsxCellValue[][], widths: number[], freezeHeader = false): string {
+  const rowXml = rows.map((row, rowIndex) => {
+    const cells = row.map((entry, columnIndex) => {
+      const normalized = typeof entry === 'object' ? entry : { value: entry, style: 0 };
+      const ref = `${xlsxColumnName(columnIndex + 1)}${rowIndex + 1}`;
+      if (typeof normalized.value === 'number' && Number.isFinite(normalized.value)) {
+        return `<c r="${ref}" s="${normalized.style}"><v>${normalized.value}</v></c>`;
+      }
+      return `<c r="${ref}" s="${normalized.style}" t="inlineStr"><is><t xml:space="preserve">${xmlEscape(normalized.value)}</t></is></c>`;
+    }).join('');
+    return `<row r="${rowIndex + 1}">${cells}</row>`;
+  }).join('');
+  const columns = widths.map((width, index) =>
+    `<col min="${index + 1}" max="${index + 1}" width="${width}" customWidth="1"/>`
+  ).join('');
+  const lastColumn = xlsxColumnName(Math.max(...rows.map((row) => row.length), 1));
+  const lastRow = Math.max(rows.length, 1);
+  const sheetView = freezeHeader
+    ? '<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>'
+    : '<sheetViews><sheetView workbookViewId="0"/></sheetViews>';
+  const filter = freezeHeader && rows.length > 1 ? `<autoFilter ref="A1:${lastColumn}${lastRow}"/>` : '';
+
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <dimension ref="A1:${lastColumn}${lastRow}"/>
+  ${sheetView}
+  <sheetFormatPr defaultRowHeight="18"/>
+  <cols>${columns}</cols>
+  <sheetData>${rowXml}</sheetData>
+  ${filter}
+</worksheet>`;
+}
+
+async function writeXlsxReport(run: any, cases: RichReportCase[], stamp: number): Promise<{ fileName: string; filePath: string }> {
+  const fileName = `report-${run.id}-${stamp}.xlsx`;
+  const filePath = testcaseFilePath(fileName);
+  const zip = new JSZip();
+  const header = (value: string): XlsxCellValue => ({ value, style: 1 });
+  const status = (value: string): XlsxCellValue => ({
+    value,
+    style: value === 'passed' ? 2 : value === 'skipped' ? 3 : 4,
+  });
+  const summaryRows: XlsxCellValue[][] = [
+    [{ value: 'Passmark TestOps', style: 5 }, { value: 'Automated Test Report', style: 5 }],
+    ['Run', run.pack?.name || run.suite?.name || run.id],
+    ['Project', run.project?.name || ''],
+    ['Environment', run.environment?.name || ''],
+    ['Target', run.target?.name || run.url || ''],
+    ['Started', new Date(run.createdAt).toISOString()],
+    ['Duration (ms)', run.durationMs || 0],
+    ['Total', cases.length],
+    ['Passed', run.passed || 0],
+    ['Failed', run.failed || 0],
+    ['Skipped', run.skipped || 0],
+  ].map((row, index) => index === 0 ? row : [{ value: row[0] as string, style: 6 }, row[1]]);
+  const resultRows: XlsxCellValue[][] = [
+    ['Case ID', 'Test case', 'Status', 'Duration (ms)', 'Module', 'Type', 'Priority', 'Expected', 'Actual', 'Error', 'Screenshot', 'Video', 'Trace'].map(header),
+    ...cases.map((testCase) => [
+      testCase.code,
+      testCase.name,
+      status(testCase.status),
+      testCase.durationMs,
+      testCase.module,
+      testCase.testType,
+      testCase.priority,
+      testCase.expected,
+      testCase.actual,
+      testCase.error,
+      testCase.screenshotPath ? path.basename(testCase.screenshotPath) : '',
+      testCase.videoPath ? path.basename(testCase.videoPath) : '',
+      testCase.tracePath ? path.basename(testCase.tracePath) : '',
+    ]),
+  ];
+  const evidenceRows: XlsxCellValue[][] = [
+    ['Case ID', 'Test case', 'Screenshot', 'Video', 'Playwright trace', 'Note'].map(header),
+    ...cases
+      .filter((testCase) => testCase.screenshotPath || testCase.videoPath || testCase.tracePath)
+      .map((testCase) => [
+        testCase.code,
+        testCase.name,
+        testCase.screenshotPath ? path.basename(testCase.screenshotPath) : '',
+        testCase.videoPath ? path.basename(testCase.videoPath) : '',
+        testCase.tracePath ? path.basename(testCase.tracePath) : '',
+        'Evidence files are included in the Evidence ZIP report.',
+      ]),
+  ];
+
+  zip.file('[Content_Types].xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/worksheets/sheet3.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+  <Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
+  <Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>
+</Types>`);
+  zip.file('_rels/.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/>
+</Relationships>`);
+  zip.file('docProps/core.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <dc:creator>Passmark TestOps</dc:creator><dc:title>Automated Test Report</dc:title>
+  <dcterms:created xsi:type="dcterms:W3CDTF">${new Date().toISOString()}</dcterms:created>
+</cp:coreProperties>`);
+  zip.file('docProps/app.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"><Application>Passmark TestOps</Application></Properties>`);
+  zip.file('xl/workbook.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets><sheet name="Summary" sheetId="1" r:id="rId1"/><sheet name="Results" sheetId="2" r:id="rId2"/><sheet name="Evidence" sheetId="3" r:id="rId3"/></sheets>
+</workbook>`);
+  zip.file('xl/_rels/workbook.xml.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet3.xml"/>
+  <Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>`);
+  zip.file('xl/styles.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts count="5"><font><sz val="11"/><name val="Aptos"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Aptos"/></font><font><b/><color rgb="FF15803D"/></font><font><b/><color rgb="FF526071"/></font><font><b/><color rgb="FFB91C1C"/></font></fonts>
+  <fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF4338CA"/><bgColor indexed="64"/></patternFill></fill></fills>
+  <borders count="2"><border/><border><left style="thin"><color rgb="FFD7DCE5"/></left><right style="thin"><color rgb="FFD7DCE5"/></right><top style="thin"><color rgb="FFD7DCE5"/></top><bottom style="thin"><color rgb="FFD7DCE5"/></bottom></border></borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs count="7">
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
+    <xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf>
+    <xf numFmtId="0" fontId="2" fillId="0" borderId="1" xfId="0" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
+    <xf numFmtId="0" fontId="3" fillId="0" borderId="1" xfId="0" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
+    <xf numFmtId="0" fontId="4" fillId="0" borderId="1" xfId="0" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
+    <xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyAlignment="1"><alignment vertical="center"/></xf>
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyFont="1"><alignment vertical="top"/></xf>
+  </cellXfs>
+  <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
+</styleSheet>`);
+  zip.file('xl/worksheets/sheet1.xml', xlsxSheet(summaryRows, [24, 72]));
+  zip.file('xl/worksheets/sheet2.xml', xlsxSheet(resultRows, [16, 42, 14, 16, 20, 16, 12, 48, 48, 56, 32, 28, 28], true));
+  zip.file('xl/worksheets/sheet3.xml', xlsxSheet(evidenceRows, [16, 42, 34, 30, 30, 48], true));
+  fs.writeFileSync(filePath, await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 6 } }));
+  return { fileName, filePath };
+}
+
+function docxCell(label: string, value: string, bold = false): TableCell {
+  return new TableCell({
+    children: [new Paragraph({ children: [new TextRun({ text: label ? `${label}: ` : '', bold: true }), new TextRun({ text: value || 'Not captured', bold })] })],
+  });
+}
+
+async function writeDocxReport(run: any, cases: RichReportCase[], stamp: number): Promise<{ fileName: string; filePath: string }> {
+  const fileName = `report-${run.id}-${stamp}.docx`;
+  const filePath = testcaseFilePath(fileName);
+  const children: Array<Paragraph | Table> = [
+    new Paragraph({ text: 'Passmark TestOps', heading: HeadingLevel.TITLE, alignment: AlignmentType.CENTER }),
+    new Paragraph({ text: 'Automated Test Execution Report', heading: HeadingLevel.HEADING_1, alignment: AlignmentType.CENTER }),
+    new Table({
+      width: { size: 100, type: WidthType.PERCENTAGE },
+      rows: [
+        new TableRow({ children: [docxCell('Run', run.pack?.name || run.suite?.name || run.id), docxCell('Project', run.project?.name || '')] }),
+        new TableRow({ children: [docxCell('Environment', run.environment?.name || ''), docxCell('Target', run.target?.name || run.url || '')] }),
+        new TableRow({ children: [docxCell('Total', String(cases.length)), docxCell('Passed / Failed', `${run.passed || 0} / ${run.failed || 0}`)] }),
+      ],
+    }),
+    new Paragraph({ text: 'Test case results', heading: HeadingLevel.HEADING_1 }),
+  ];
+
+  for (const testCase of cases) {
+    children.push(
+      new Paragraph({
+        heading: HeadingLevel.HEADING_2,
+        children: [
+          new TextRun({ text: `${testCase.code} — ${testCase.name}`, bold: true }),
+          new TextRun({ text: `  [${testCase.status.toUpperCase()}]`, bold: true, color: testCase.status === 'passed' ? '15803D' : testCase.status === 'skipped' ? '526071' : 'B91C1C' }),
+        ],
+      }),
+      new Table({
+        width: { size: 100, type: WidthType.PERCENTAGE },
+        rows: [
+          new TableRow({ children: [docxCell('Expected', testCase.expected), docxCell('Actual', testCase.actual)] }),
+          new TableRow({ children: [docxCell('Duration', `${testCase.durationMs} ms`), docxCell('Error', testCase.error || 'None')] }),
+        ],
+      }),
+    );
+
+    if (testCase.screenshotPath && fs.existsSync(testCase.screenshotPath)) {
+      const extension = path.extname(testCase.screenshotPath).toLowerCase();
+      if (['.png', '.jpg', '.jpeg'].includes(extension)) {
+        children.push(
+          new Paragraph({ children: [new TextRun({ text: 'Screenshot evidence', bold: true })] }),
+          new Paragraph({
+            alignment: AlignmentType.CENTER,
+            children: [new ImageRun({
+              data: fs.readFileSync(testCase.screenshotPath),
+              transformation: { width: 560, height: 315 },
+              type: extension === '.png' ? 'png' : 'jpg',
+            })],
+          }),
+        );
+      }
+    }
+  }
+
+  const document = new Document({ sections: [{ children }] });
+  fs.writeFileSync(filePath, await Packer.toBuffer(document));
+  return { fileName, filePath };
+}
+
+async function writeEvidenceZip(
+  runId: string,
+  stamp: number,
+  reportFiles: Array<{ filePath: string }>,
+  artifacts: Array<{ type: string; path: string }>
+): Promise<{ fileName: string; filePath: string }> {
+  const fileName = `report-${runId}-${stamp}-evidence.zip`;
+  const filePath = testcaseFilePath(fileName);
+  const included = new Set<string>();
+
+  await new Promise<void>((resolve, reject) => {
+    const output = fs.createWriteStream(filePath);
+    const archive = new ZipArchive({ zlib: { level: 9 } });
+    output.on('close', resolve);
+    output.on('error', reject);
+    archive.on('error', reject);
+    archive.pipe(output);
+
+    reportFiles.forEach((file) => {
+      if (fs.existsSync(file.filePath) && !included.has(file.filePath)) {
+        included.add(file.filePath);
+        archive.file(file.filePath, { name: `report/${path.basename(file.filePath)}` });
+      }
+    });
+    artifacts.forEach((artifact) => {
+      const artifactPath = resolveImagePath(artifact.path);
+      if (artifactPath && fs.statSync(artifactPath).isFile() && !included.has(artifactPath)) {
+        included.add(artifactPath);
+        archive.file(artifactPath, { name: `evidence/${artifact.type}/${path.basename(artifactPath)}` });
+      }
+    });
+    void archive.finalize();
+  });
+
+  return { fileName, filePath };
+}
+
+async function upsertRunReportArtifact(runId: string, type: string, filePath: string) {
+  await prisma.$transaction([
+    prisma.artifact.deleteMany({ where: { runId, type } }),
+    prisma.artifact.create({
+      data: { id: `${runId}-${type}`, runId, type, path: filePath },
+    }),
+  ]);
+}
+
+async function writeRunResultReports(runId: string) {
+  const csv = await writeRunResultCsv(runId);
+  const run = await prisma.testRun.findUnique({
+    where: { id: runId },
+    include: {
+      project: true,
+      suite: true,
+      environment: true,
+      target: true,
+      pack: true,
+      results: { orderBy: { caseCode: 'asc' } },
+      artifacts: true,
+    },
+  });
+  if (!run) return;
+
+  const stamp = Date.now();
+  const cases = richReportCases(run);
+  const html = writeRichHtmlReport(run.id, buildRunReportHtml(run, cases), stamp);
+  await upsertRunReportArtifact(runId, 'result-html', html.filePath);
+  const pdf = await writePdfReport(run.id, html.filePath, stamp);
+  await upsertRunReportArtifact(runId, 'result-pdf', pdf.filePath);
+  const excel = await writeXlsxReport(run, cases, stamp);
+  await upsertRunReportArtifact(runId, 'result-excel', excel.filePath);
+  const doc = await writeDocxReport(run, cases, stamp);
+  await upsertRunReportArtifact(runId, 'result-doc', doc.filePath);
+
+  const evidenceArtifacts = await prisma.artifact.findMany({
+    where: {
+      runId,
+      type: { in: ['actual-screenshot', 'screenshot', 'video', 'trace', 'raw-log'] },
+    },
+  });
+  const zip = await writeEvidenceZip(runId, stamp, [csv, html, pdf, excel, doc], evidenceArtifacts);
+  await upsertRunReportArtifact(runId, 'result-zip', zip.filePath);
 }
 
 function resultToSourceRow(result: any): TestcaseFileRow {
@@ -2859,13 +3417,20 @@ function buildProfessionalTestcasePrompt(
   suite?: TestSuite,
   target?: TestTarget
 ): string {
+  const batchRequest = userRequest
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*(?:generate|coverage target:).*?(?:approximately|~)\s*\d+\b/i.test(line))
+    .join('\n')
+    .trim();
+
   return `Return compact JSON only: {"n":${count},"cases":[{"t":"short unique title","e":"specific expected result","k":"automation kind","y":"functional|ui|api|accessibility|seo|performance|security","p":"high|medium|low","s":"critical|major|minor|trivial"}]}.
+IMPORTANT BATCH RULE: return exactly ${count} entries in "cases". This batch size overrides any overall coverage count from the request.
 Create exactly ${count} professional QA cases numbered conceptually ${startIndex + 1}-${startIndex + count} for ${url}.
 Allowed k: manual,page_load,page_load_performance,title_exists,selector_visible,body_text_contains,meta_description_exists,meta_description_length,canonical_exists,h1_exists,html_lang_exists,viewport_exists,link_health_basic,image_resources_ok,image_alt_text,no_console_errors,no_page_errors,form_validation,generic_visible_content.
 Use the Test type requested by the user as y for every case. Use page_load_performance for safe performance checks; never generate load or stress traffic.
 Mix positive, negative and edge coverage when relevant. No destructive, load or stress tests. Do not invent credentials. Avoid duplicate titles.
 ${existingTitles.length ? `Do not repeat these existing titles: ${existingTitles.slice(-20).join(' | ')}.` : ''}
-Suite: ${suite?.name || 'General'} (${suite?.type || target?.type || 'web'}). Request: ${userRequest.trim() || 'Create focused test cases.'}`;
+Suite: ${suite?.name || 'General'} (${suite?.type || target?.type || 'web'}). Request: ${batchRequest || 'Create focused test cases.'}`;
 }
 
 function normalizeCaseIds(rows: TestcaseFileRow[]): TestcaseFileRow[] {
@@ -2978,9 +3543,14 @@ async function generateProfessionalTestcaseFile(
   const aiResponses: string[] = [];
   const generatedRows: TestcaseFileRow[] = [];
   const seenTitles = new Set<string>();
-  const estimatedBatches = Math.max(1, Math.ceil(targetCount / 5));
+  const configuredBatchSize = Math.max(1, Math.min(4, readConfigNumber('LOCAL_AI_CASES_PER_BATCH', 2)));
+  const batchTimeoutMs = readConfigNumber('LOCAL_AI_BATCH_TIMEOUT_MS', 90000);
+  const batchMaxTokens = readConfigNumber('LOCAL_AI_BATCH_MAX_TOKENS', 512);
+  const estimatedBatches = Math.max(1, Math.ceil(targetCount / configuredBatchSize));
   const maxAttempts = estimatedBatches + 2;
   let attempts = 0;
+  let consecutiveTimeouts = 0;
+  let nextBatchSize = configuredBatchSize;
   let lastBatchError = '';
   try {
     await options.onProgress?.({
@@ -2990,6 +3560,7 @@ async function generateProfessionalTestcaseFile(
       estimatedBatches,
       attempt: 0,
       maxAttempts,
+      message: 'Preparing the first Local AI batch.',
     });
 
     while (generatedRows.length < targetCount && attempts < maxAttempts) {
@@ -2998,7 +3569,11 @@ async function generateProfessionalTestcaseFile(
       }
 
       attempts += 1;
-      const chunkCount = Math.min(5, targetCount - generatedRows.length);
+      const batch = Math.min(
+        estimatedBatches,
+        Math.floor(generatedRows.length / configuredBatchSize) + 1
+      );
+      const chunkCount = Math.min(nextBatchSize, targetCount - generatedRows.length);
       const aiPrompt = buildProfessionalTestcasePrompt(
         url,
         userRequest,
@@ -3013,24 +3588,63 @@ async function generateProfessionalTestcaseFile(
       await options.onProgress?.({
         generatedCount: generatedRows.length,
         targetCount,
-        batch: attempts,
+        batch,
         estimatedBatches,
         attempt: attempts,
         maxAttempts,
+        message: `Waiting for Local AI to start batch ${batch} of approximately ${estimatedBatches}.`,
       });
 
       let chunkRows: TestcaseFileRow[] = [];
       try {
+        let lastActivityUpdate = 0;
         const aiResponse = await askLocalAI([
           { role: 'system', content: 'Senior QA lead. Follow the compact JSON schema exactly.' },
           { role: 'user', content: aiPrompt },
-        ], { signal: options.signal });
+        ], {
+          signal: options.signal,
+          timeoutMs: batchTimeoutMs,
+          maxTokens: batchMaxTokens,
+          onProgress: (activity) => {
+            const now = Date.now();
+            if (now - lastActivityUpdate < 500 && activity.receivedChars > 1) return;
+            lastActivityUpdate = now;
+            void options.onProgress?.({
+              generatedCount: generatedRows.length,
+              targetCount,
+              batch,
+              estimatedBatches,
+              attempt: attempts,
+              maxAttempts,
+              message: `Local AI is responding · ${activity.receivedChars} characters received for batch ${batch}.`,
+            });
+          },
+        });
         aiResponses.push(aiResponse);
         const parsed = parseAiJsonObject(aiResponse);
         chunkRows = normalizeProfessionalRows(parsed).slice(0, chunkCount);
+        consecutiveTimeouts = 0;
+        nextBatchSize = configuredBatchSize;
       } catch (batchError) {
         if (options.signal?.aborted) throw batchError;
         lastBatchError = batchError instanceof Error ? batchError.message : String(batchError);
+        const timedOut = /timed out/i.test(lastBatchError);
+        consecutiveTimeouts = timedOut ? consecutiveTimeouts + 1 : 0;
+        if (timedOut && nextBatchSize > 1) {
+          nextBatchSize = 1;
+        }
+        await options.onProgress?.({
+          generatedCount: generatedRows.length,
+          targetCount,
+          batch,
+          estimatedBatches,
+          attempt: attempts,
+          maxAttempts,
+          message: timedOut && attempts < maxAttempts
+            ? `Batch ${batch} was too slow. Retrying with ${nextBatchSize} case per response.`
+            : `Batch ${batch} returned invalid data. Retrying automatically.`,
+        });
+        if (consecutiveTimeouts >= 2) break;
         continue;
       }
 
@@ -3051,10 +3665,11 @@ async function generateProfessionalTestcaseFile(
       const progress = {
         generatedCount: generatedRows.length,
         targetCount,
-        batch: attempts,
+        batch,
         estimatedBatches,
         attempt: attempts,
         maxAttempts,
+        message: `${generatedRows.length} of ${targetCount} cases are valid and saved.`,
       };
       if (acceptedRows.length) {
         await options.onBatch?.(acceptedRows, progress);
@@ -3754,29 +4369,107 @@ async function updateProgressiveCase(
   index: number,
   runId?: string
 ) {
+  const persistedCase = runId
+    ? await persistCaseEvidence(runId, resultId, testCase, index)
+    : testCase;
+
   await prisma.testResult.update({
     where: { id: resultId },
-    data: testResultPayload(testCase, index),
+    data: testResultPayload(persistedCase, index),
   });
+}
 
-  if (runId && testCase.actualImage) {
-    const fileName = path.basename(testCase.actualImage.replace('/api/testcase-files/download/', ''));
-    const artifactPath = testcaseFilePath(decodeURIComponent(fileName));
+function safePlaywrightAttachmentPath(value: string): string {
+  const resolved = path.resolve(rootDir, value);
+  const allowedRoots = [
+    path.resolve(rootDir, 'test-results'),
+    path.resolve(testcaseFileDir()),
+  ];
 
-    if (fs.existsSync(artifactPath)) {
-      await prisma.artifact.upsert({
-        where: { id: `${resultId}-screenshot` },
-        update: { path: artifactPath },
-        create: {
-          id: `${resultId}-screenshot`,
-          runId,
-          resultId,
-          type: 'actual-screenshot',
-          path: artifactPath,
-        },
-      });
+  return allowedRoots.some((root) => resolved === root || resolved.startsWith(`${root}${path.sep}`))
+    ? resolved
+    : '';
+}
+
+function attachmentArtifactType(attachment: { name: string; contentType: string; path: string }): 'actual-screenshot' | 'video' | 'trace' | null {
+  const extension = path.extname(attachment.path).toLowerCase();
+  const name = attachment.name.toLowerCase();
+  const contentType = attachment.contentType.toLowerCase();
+
+  if (contentType.startsWith('image/') || ['.png', '.jpg', '.jpeg', '.webp'].includes(extension)) {
+    return 'actual-screenshot';
+  }
+  if (contentType.startsWith('video/') || extension === '.webm') {
+    return 'video';
+  }
+  if (name.includes('trace') || (extension === '.zip' && path.basename(attachment.path).toLowerCase().includes('trace'))) {
+    return 'trace';
+  }
+  return null;
+}
+
+async function upsertResultArtifact(runId: string, resultId: string, type: string, artifactPath: string) {
+  await prisma.artifact.upsert({
+    where: { id: `${resultId}-${type}` },
+    update: { path: artifactPath },
+    create: {
+      id: `${resultId}-${type}`,
+      runId,
+      resultId,
+      type,
+      path: artifactPath,
+    },
+  });
+}
+
+async function persistCaseEvidence(
+  runId: string,
+  resultId: string,
+  testCase: TestCaseDetail,
+  index: number
+): Promise<TestCaseDetail> {
+  let actualImage = testCase.actualImage || '';
+  const caseSlug = safeEvidenceSlug(caseCodeFromTitle(testCase.title) || generatedCaseCode(index));
+
+  if (actualImage) {
+    const currentImagePath = resolveImagePath(actualImage);
+    if (currentImagePath) {
+      await upsertResultArtifact(runId, resultId, 'actual-screenshot', currentImagePath);
     }
   }
+
+  for (const attachment of testCase.attachments || []) {
+    const type = attachmentArtifactType(attachment);
+    const sourcePath = type ? safePlaywrightAttachmentPath(attachment.path) : '';
+    if (!type || !sourcePath || !fs.existsSync(sourcePath) || !fs.statSync(sourcePath).isFile()) {
+      continue;
+    }
+
+    const allowedExtensions = type === 'actual-screenshot'
+      ? ['.png', '.jpg', '.jpeg', '.webp']
+      : type === 'video'
+        ? ['.webm']
+        : ['.zip'];
+    const sourceExtension = path.extname(sourcePath).toLowerCase();
+    const extension = allowedExtensions.includes(sourceExtension)
+      ? sourceExtension
+      : type === 'actual-screenshot' ? '.png' : type === 'video' ? '.webm' : '.zip';
+    const outputPath = testcaseFilePath(`${runId}-${caseSlug}-${type}${extension}`);
+
+    if (path.resolve(sourcePath) !== path.resolve(outputPath)) {
+      fs.copyFileSync(sourcePath, outputPath);
+    }
+    await upsertResultArtifact(runId, resultId, type, outputPath);
+
+    if (type === 'actual-screenshot') {
+      actualImage = artifactDownloadUrl(outputPath) || actualImage;
+    }
+  }
+
+  return {
+    ...testCase,
+    actualImage,
+  };
 }
 
 async function runPlaywrightProgressively(
@@ -3878,7 +4571,11 @@ async function runPlaywrightProgressively(
   const finalStatus: TestRunStatus = hasFailed ? 'failed' : 'passed';
 
   await updateRunSummaryFromResults(job.runId, finalStatus, Date.now() - startedAt);
-  await writeRunResultCsv(job.runId);
+  try {
+    await writeRunResultReports(job.runId);
+  } catch (reportError) {
+    console.error(`[report] Unable to generate rich report for ${job.runId}.`, reportError);
+  }
   await prisma.testRun.update({
     where: { id: job.runId },
     data: {
@@ -4170,9 +4867,9 @@ async function executeTestcaseGenerationJob(job: TestcaseGenerationJob) {
             generatedCount: progress.generatedCount,
             batch: progress.batch,
             attempt: progress.attempt,
-            message: progress.generatedCount
+            message: progress.message || (progress.generatedCount
               ? `${progress.generatedCount} of ${progress.targetCount} cases saved. Processing the next batch.`
-              : `Generating batch ${Math.max(1, progress.batch)} of approximately ${progress.estimatedBatches}.`,
+              : `Generating batch ${Math.max(1, progress.batch)} of approximately ${progress.estimatedBatches}.`),
           });
         },
         onBatch: async (rows, progress) => {
@@ -4729,7 +5426,9 @@ const server = http.createServer(async (request, response) => {
       }
 
       const contentType = mimeTypeForPath(filePath);
-      const disposition = contentType.startsWith('image/') ? 'inline' : 'attachment';
+      const disposition = contentType.startsWith('image/') || contentType.startsWith('video/') || contentType.startsWith('text/html') || contentType === 'application/pdf'
+        ? 'inline'
+        : 'attachment';
       response.writeHead(200, {
         'Content-Type': contentType,
         'Content-Disposition': `${disposition}; filename="${path.basename(fileName)}"`,
@@ -4754,6 +5453,36 @@ const server = http.createServer(async (request, response) => {
         },
       });
       sendJson(response, 200, runs.map((run) => toRunSummary(dbRunToApiRun(run))));
+      return;
+    }
+
+    const reportRunMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/report$/);
+    if (request.method === 'POST' && reportRunMatch) {
+      const id = decodeURIComponent(reportRunMatch[1]);
+      const existingRun = await prisma.testRun.findUnique({ where: { id } });
+      if (!existingRun) {
+        sendError(response, 404, 'Run not found');
+        return;
+      }
+      if (['queued', 'running'].includes(existingRun.status)) {
+        sendError(response, 409, 'Report is available after the run finishes.');
+        return;
+      }
+
+      await writeRunResultReports(id);
+      const run = await prisma.testRun.findUnique({
+        where: { id },
+        include: {
+          project: true,
+          suite: true,
+          environment: true,
+          target: true,
+          pack: true,
+          results: { orderBy: { caseCode: 'asc' } },
+          artifacts: true,
+        },
+      });
+      sendJson(response, 200, dbRunToApiRun(run));
       return;
     }
 
@@ -4866,11 +5595,26 @@ const server = http.createServer(async (request, response) => {
     if (request.method === 'POST' && requestUrl.pathname === '/api/testcase-files/generate') {
       const body = await readBody(request);
       const { project, suite, target } = await resolveProjectSuiteTargetContext(body.projectId, body.suiteId, body.targetId);
+      const packId = typeof body.packId === 'string' ? body.packId.trim() : '';
+      if (!packId) {
+        throw new Error('Create or select a Test Pack before generating test cases.');
+      }
+      const pack = await prisma.testPack.findUnique({ where: { id: packId } });
+      if (!pack || pack.archived || !project || pack.projectId !== project.id) {
+        throw new Error('The selected Test Pack is unavailable for this project.');
+      }
       const displayUrl = resolveRunUrl(body.url, project, target);
       const runEnvironment = await ensureRunEnvironment(project?.id, body.environment || project?.environment, displayUrl);
       const url = runnerReachableUrl(displayUrl, normalizeEnvironment(runEnvironment?.name || body.environment || project?.environment));
-      const userRequest = buildSuiteUserRequest(typeof body.userRequest === 'string' ? body.userRequest : '', suite);
+      const requestText = typeof body.userRequest === 'string' ? body.userRequest.trim() : '';
+      const userRequest = buildSuiteUserRequest([
+        `Test Pack: ${pack.name}`,
+        pack.description ? `Pack objective: ${pack.description}` : '',
+        requestText,
+      ].filter(Boolean).join('\n\n'), suite);
       const targetCount = requestedTestcaseCount(userRequest);
+      const casesPerBatch = Math.max(1, Math.min(4, readConfigNumber('LOCAL_AI_CASES_PER_BATCH', 2)));
+      const estimatedBatches = Math.max(1, Math.ceil(targetCount / casesPerBatch));
       const now = new Date().toISOString();
       const job: TestcaseGenerationJob = {
         id: newId('generation'),
@@ -4878,16 +5622,16 @@ const server = http.createServer(async (request, response) => {
         project,
         suite,
         target,
-        packId: typeof body.packId === 'string' ? body.packId : undefined,
+        packId,
         url,
         userRequest,
         targetCount,
         generatedCount: 0,
         persistedCaseIds: [],
         batch: 0,
-        estimatedBatches: Math.max(1, Math.ceil(targetCount / 5)),
+        estimatedBatches,
         attempt: 0,
-        maxAttempts: Math.max(1, Math.ceil(targetCount / 5)) + 2,
+        maxAttempts: estimatedBatches + 2,
         message: 'Queued for Local AI generation.',
         createdAt: now,
         updatedAt: now,
