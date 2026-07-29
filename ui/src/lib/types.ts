@@ -53,7 +53,7 @@ export type Priority = "Critical" | "High" | "Medium" | "Low";
 export type Severity = "Blocker" | "Critical" | "Major" | "Minor" | "Trivial";
 export type TestType = "Functional" | "UI" | "API" | "Accessibility" | "SEO" | "Performance" | "Security";
 export type Automation = "manual" | "automated";
-export type PackKind = "system" | "saved" | "all" | "manual" | "automated";
+export type PackKind = "system" | "saved" | "all" | "manual" | "automated" | "feature" | "requirement" | "release" | "custom";
 export type CycleStatus = "draft" | "active" | "completed" | "archived";
 
 export interface Target {
@@ -158,6 +158,8 @@ export interface RunCaseResult {
   hasTrace?: boolean;
   hasRawArtifact?: boolean;
   evidenceUrl?: string;
+  videoUrl?: string;
+  traceUrl?: string;
 }
 
 export interface TestRun {
@@ -187,6 +189,9 @@ export interface TestRun {
   resultCsvUrl?: string;
   resultExcelUrl?: string;
   resultDocUrl?: string;
+  resultHtmlUrl?: string;
+  resultPdfUrl?: string;
+  resultZipUrl?: string;
 }
 
 export interface ManualCaseExecution {
