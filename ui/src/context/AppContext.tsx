@@ -1,4 +1,5 @@
 ﻿import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { toast } from 'sonner';
 import { get, post, put } from '../lib/api';
 import type {
   EnvironmentName,
@@ -10,6 +11,7 @@ import type {
   TestCase,
   TestCycle,
   TestPack,
+  PackKind,
   TestRun,
   Theme,
   ViewMode,
@@ -37,6 +39,28 @@ export interface TestcaseGenerationProgress {
 export interface TestcaseGenerationOptions {
   signal?: AbortSignal;
   onProgress?: (progress: TestcaseGenerationProgress) => void;
+}
+
+export type TestcaseGenerationPhase = 'starting' | 'running' | 'cancelling' | 'completed' | 'failed' | 'cancelled';
+
+export interface TestcaseGenerationSession {
+  projectId: string;
+  packId: string;
+  packName: string;
+  targetCount: number;
+  startedAt: string;
+  phase: TestcaseGenerationPhase;
+  progress: TestcaseGenerationProgress | null;
+  error?: string;
+}
+
+export interface CreateTestPackInput {
+  name: string;
+  description: string;
+  kind: Extract<PackKind, 'feature' | 'requirement' | 'release' | 'custom' | 'saved'>;
+  caseIds: string[];
+  defaultEnvironment?: EnvironmentName;
+  defaultTargetId?: string;
 }
 
 export interface RunRequest {
@@ -75,15 +99,24 @@ interface AppState {
   requestSmokeRun: (projectId: string) => void;
   clearSmokeIntent: () => void;
   startRun: (request: RunRequest) => Promise<TestRun>;
+  generateRunReport: (id: string) => Promise<TestRun>;
   updateRunStatus: (id: string, status: RunStatus) => void;
-  createSavedPack: (name: string, description: string, caseIds: string[]) => TestPack;
-  updatePack: (id: string, updates: Partial<Pick<TestPack, 'name' | 'description' | 'caseIds' | 'archived'>>) => void;
-  duplicatePack: (id: string) => TestPack | null;
+  createTestPack: (input: CreateTestPackInput) => Promise<TestPack>;
+  updatePack: (id: string, updates: Partial<Pick<TestPack, 'name' | 'description' | 'kind' | 'caseIds' | 'defaultEnvironment' | 'defaultTargetId' | 'archived'>>) => void;
+  duplicatePack: (id: string) => Promise<TestPack | null>;
   addCasesToPack: (packId: string, caseIds: string[]) => void;
   addGeneratedCases: (packId: string, count: number, request?: string, options?: TestcaseGenerationOptions) => Promise<number>;
+  testcaseGeneration: TestcaseGenerationSession | null;
+  testcaseGenerationActive: boolean;
+  cancelTestcaseGeneration: () => void;
+  generationPanelRequest: number;
+  requestGenerationPanel: () => void;
+  generationPanelVisible: boolean;
+  setGenerationPanelVisible: (visible: boolean) => void;
   createTestCase: (input: Partial<TestCase>, packId?: string | null) => Promise<TestCase>;
   updateTestCase: (id: string, input: Partial<TestCase>) => Promise<TestCase>;
-  importCases: (csvContent: string, fileName: string, packId: string | null) => Promise<number>;
+  importCases: (xlsxBase64: string, fileName: string, packId: string | null) => Promise<number>;
+  exportTestCases: (caseIds: string[], packId: string | null) => Promise<TestcaseExportBundle>;
   archiveTestCase: (id: string) => Promise<void>;
   createCycle: (cycle: Omit<TestCycle, 'id' | 'executions' | 'linkedDefects' | 'status'>) => TestCycle;
   updateCycle: (id: string, updates: Partial<TestCycle>) => void;
@@ -92,6 +125,18 @@ interface AppState {
   checkAI: () => Promise<void>;
   testAI: () => Promise<string>;
   unloadAI: () => Promise<void>;
+}
+
+export interface TestcaseExportBundle {
+  htmlUrl: string;
+  pdfUrl: string;
+  excelUrl: string;
+  wordUrl: string;
+  csvUrl: string;
+  jsonUrl: string;
+  total: number;
+  projectName: string;
+  packName: string;
 }
 
 type RawRecord = Record<string, any>;
@@ -183,6 +228,22 @@ function mapCase(raw: RawRecord): TestCase {
   };
 }
 
+function mapPack(pack: RawRecord): TestPack {
+  return {
+    ...pack,
+    id: String(pack.id),
+    projectId: String(pack.projectId),
+    name: String(pack.name),
+    description: String(pack.description || ''),
+    owner: String(pack.owner || 'Local QA Team'),
+    kind: pack.kind || 'custom',
+    caseIds: Array.isArray(pack.caseIds) ? pack.caseIds.map(String) : [],
+    defaultEnvironment: pack.defaultEnvironment ? environmentName(pack.defaultEnvironment) : undefined,
+    defaultTargetId: pack.defaultTargetId || undefined,
+    updatedAt: String(pack.updatedAt || new Date().toISOString()),
+  } as TestPack;
+}
+
 function mapRun(raw: RawRecord): TestRun {
   const summary = raw.summary || raw;
   const results = Array.isArray(raw.cases) ? raw.cases : Array.isArray(raw.results) ? raw.results : [];
@@ -229,6 +290,8 @@ function mapRun(raw: RawRecord): TestRun {
         hasTrace: Boolean(result.hasTrace),
         hasRawArtifact: Boolean(result.hasRawArtifact),
         evidenceUrl: typeof result.actualImage === 'string' ? result.actualImage : undefined,
+        videoUrl: typeof result.videoUrl === 'string' ? result.videoUrl : undefined,
+        traceUrl: typeof result.traceUrl === 'string' ? result.traceUrl : undefined,
       };
     }),
     errorKind: raw.errorKind,
@@ -236,6 +299,9 @@ function mapRun(raw: RawRecord): TestRun {
     resultCsvUrl: raw.resultCsvUrl || undefined,
     resultExcelUrl: raw.resultExcelUrl || undefined,
     resultDocUrl: raw.resultDocUrl || undefined,
+    resultHtmlUrl: raw.resultHtmlUrl || undefined,
+    resultPdfUrl: raw.resultPdfUrl || undefined,
+    resultZipUrl: raw.resultZipUrl || undefined,
   };
 }
 
@@ -280,6 +346,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [aiStatus, setAIStatus] = useState<LocalAIStatus>(defaultAI);
+  const [testcaseGeneration, setTestcaseGeneration] = useState<TestcaseGenerationSession | null>(null);
+  const [generationPanelRequest, setGenerationPanelRequest] = useState(0);
+  const [generationPanelVisible, setGenerationPanelVisible] = useState(false);
+  const testcaseGenerationBusyRef = useRef(false);
+  const testcaseGenerationControllerRef = useRef<AbortController | null>(null);
   const suitesByProject = useRef<Record<string, string>>({});
 
   useEffect(() => {
@@ -354,19 +425,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const mappedCases = caseGroups.flat().map(mapCase);
       setProjects(mappedProjects);
       setTestCases(mappedCases);
-      setTestPacks(rawPacks.map((pack) => ({
-        ...pack,
-        id: String(pack.id),
-        projectId: String(pack.projectId),
-        name: String(pack.name),
-        description: String(pack.description || ''),
-        owner: String(pack.owner || 'Local QA Team'),
-        kind: pack.kind || 'saved',
-        caseIds: Array.isArray(pack.caseIds) ? pack.caseIds.map(String) : [],
-        defaultEnvironment: pack.defaultEnvironment ? environmentName(pack.defaultEnvironment) : undefined,
-        defaultTargetId: pack.defaultTargetId || undefined,
-        updatedAt: String(pack.updatedAt || new Date().toISOString()),
-      })) as TestPack[]);
+      setTestPacks(rawPacks.map(mapPack));
       setRuns(mappedRuns);
       setCycles(rawCycles.map((cycle) => ({ ...cycle, environment: environmentName(cycle.environment), startDate: String(cycle.startDate), dueDate: String(cycle.dueDate) })) as TestCycle[]);
       setAIStatus({ ...rawAI, checking: false });
@@ -498,24 +557,47 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const createSavedPack = (name: string, description: string, caseIds: string[]): TestPack => {
-    const pack: TestPack = { id: `pack-${Date.now()}`, projectId: currentProject.id, name, description, kind: 'saved', caseIds, owner: 'Local QA Team', updatedAt: new Date().toISOString() };
-    setTestPacks((items) => [...items, pack]);
-    void post('/api/test-packs', pack).catch((saveError) => setError(saveError instanceof Error ? saveError.message : String(saveError)));
+  const generateRunReport = async (id: string): Promise<TestRun> => {
+    const generated = mapRun(await post<RawRecord>(`/api/runs/${encodeURIComponent(id)}/report`, {}));
+    setRuns((items) => items.map((run) => run.id === id ? generated : run));
+    return generated;
+  };
+
+  const createTestPack = async (input: CreateTestPackInput): Promise<TestPack> => {
+    const created = await post<RawRecord>('/api/test-packs', {
+      projectId: currentProject.id,
+      owner: 'Local QA Team',
+      ...input,
+      defaultEnvironment: input.defaultEnvironment ? environmentValue(input.defaultEnvironment) : '',
+    });
+    const pack = mapPack(created);
+    setTestPacks((items) => [...items.filter((item) => item.id !== pack.id), pack]);
     return pack;
   };
 
-  const updatePack = (id: string, updates: Partial<Pick<TestPack, 'name' | 'description' | 'caseIds' | 'archived'>>) => {
+  const updatePack = (id: string, updates: Partial<Pick<TestPack, 'name' | 'description' | 'kind' | 'caseIds' | 'defaultEnvironment' | 'defaultTargetId' | 'archived'>>) => {
     const existing = testPacks.find((pack) => pack.id === id);
     if (!existing) return;
     const next = { ...existing, ...updates, updatedAt: new Date().toISOString() };
     setTestPacks((items) => items.map((pack) => pack.id === id ? next : pack));
-    void put(`/api/test-packs/${encodeURIComponent(id)}`, next).catch((saveError) => setError(saveError instanceof Error ? saveError.message : String(saveError)));
+    void put(`/api/test-packs/${encodeURIComponent(id)}`, {
+      ...next,
+      defaultEnvironment: next.defaultEnvironment ? environmentValue(next.defaultEnvironment) : '',
+    }).catch((saveError) => setError(saveError instanceof Error ? saveError.message : String(saveError)));
   };
 
-  const duplicatePack = (id: string) => {
+  const duplicatePack = async (id: string) => {
     const source = testPacks.find((pack) => pack.id === id);
-    return source ? createSavedPack(`${source.name} copy`, source.description, [...source.caseIds]) : null;
+    return source ? createTestPack({
+      name: `${source.name} copy`,
+      description: source.description,
+      kind: ['feature', 'requirement', 'release', 'custom', 'saved'].includes(source.kind)
+        ? source.kind as CreateTestPackInput['kind']
+        : 'custom',
+      caseIds: [...source.caseIds],
+      defaultEnvironment: source.defaultEnvironment,
+      defaultTargetId: source.defaultTargetId,
+    }) : null;
   };
 
   const addCasesToPack = (packId: string, caseIds: string[]) => {
@@ -529,35 +611,75 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     request = 'Generate professional test cases for the selected Test Pack.',
     options: TestcaseGenerationOptions = {}
   ): Promise<number> => {
+    if (testcaseGenerationBusyRef.current) {
+      throw new Error('Another Local AI generation is already running. Open its progress panel to review or cancel it first.');
+    }
     const pack = testPacks.find((item) => item.id === packId);
-    const targetId = pack?.defaultTargetId || currentProject.defaultTargetId;
-    let progress = await post<TestcaseGenerationProgress>('/api/testcase-files/generate', {
-      projectId: currentProject.id, suiteId: suitesByProject.current[currentProject.id], targetId, packId,
-      url: getTargetUrl(currentProject.id, targetId, pack?.defaultEnvironment || environment),
-      userRequest: `${request}\nCoverage target: approximately ${count} cases.`,
-    });
-    options.onProgress?.(progress);
+    if (!pack) throw new Error('The selected Test Pack is unavailable.');
+    const project = projects.find((item) => item.id === pack.projectId);
+    if (!project) throw new Error('The selected project is unavailable.');
+
+    const targetId = pack.defaultTargetId || project.defaultTargetId;
+    const selectedEnvironment = pack.defaultEnvironment || environment;
+    const controller = new AbortController();
+    const startedAt = new Date().toISOString();
+    let progress: TestcaseGenerationProgress | null = null;
     let lastRenderedCount = 0;
+    let cancellationRequested = false;
     let cancellationSent = false;
+    testcaseGenerationBusyRef.current = true;
+    testcaseGenerationControllerRef.current = controller;
+    setTestcaseGeneration({
+      projectId: project.id,
+      packId,
+      packName: pack.name,
+      targetCount: count,
+      startedAt,
+      phase: 'starting',
+      progress: null,
+    });
 
     const requestCancellation = () => {
-      if (cancellationSent) return;
+      cancellationRequested = true;
+      setTestcaseGeneration((session) => session ? { ...session, phase: 'cancelling' } : session);
+      if (cancellationSent || !progress?.id) return;
       cancellationSent = true;
       void post<TestcaseGenerationProgress>(
         `/api/testcase-files/generate/${encodeURIComponent(progress.id)}/cancel`,
         {}
       ).catch(() => undefined);
     };
-    options.signal?.addEventListener('abort', requestCancellation, { once: true });
+    controller.signal.addEventListener('abort', requestCancellation);
+    const relayExternalAbort = () => controller.abort();
+    options.signal?.addEventListener('abort', relayExternalAbort, { once: true });
+    if (options.signal?.aborted) controller.abort();
 
     try {
+      progress = await post<TestcaseGenerationProgress>('/api/testcase-files/generate', {
+        projectId: project.id,
+        suiteId: suitesByProject.current[project.id],
+        targetId,
+        packId,
+        environment: environmentValue(selectedEnvironment),
+        url: getTargetUrl(project.id, targetId, selectedEnvironment),
+        userRequest: `${request}\nCoverage target: approximately ${count} cases.`,
+      });
+      if (controller.signal.aborted || cancellationRequested) requestCancellation();
+      options.onProgress?.(progress);
+      setTestcaseGeneration((session) => session ? { ...session, phase: 'running', progress } : session);
+
       while (!['completed', 'failed', 'cancelled'].includes(progress.status)) {
-        if (options.signal?.aborted) requestCancellation();
+        if (controller.signal.aborted) requestCancellation();
         await new Promise((resolve) => window.setTimeout(resolve, 1200));
         progress = await get<TestcaseGenerationProgress>(
           `/api/testcase-files/generate/${encodeURIComponent(progress.id)}`
         );
         options.onProgress?.(progress);
+        setTestcaseGeneration((session) => session ? {
+          ...session,
+          phase: controller.signal.aborted ? 'cancelling' : 'running',
+          progress,
+        } : session);
         if (progress.generatedCount > lastRenderedCount) {
           lastRenderedCount = progress.generatedCount;
           await refresh();
@@ -566,13 +688,46 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
       await refresh();
       if (progress.status === 'completed') {
-        return progress.persistedCaseIds?.length || progress.generatedCount || 0;
+        const saved = progress.persistedCaseIds?.length || progress.generatedCount || 0;
+        setTestcaseGeneration((session) => session ? { ...session, phase: 'completed', progress } : session);
+        toast.success(`${saved} AI-generated test cases saved in ${pack.name}.`);
+        return saved;
       }
       throw new Error(progress.error || progress.message || 'Test case generation did not complete.');
+    } catch (generationError) {
+      const message = generationError instanceof Error ? generationError.message : String(generationError);
+      const cancelled = controller.signal.aborted || progress?.status === 'cancelled' || /cancelled|canceled/i.test(message);
+      setTestcaseGeneration((session) => session ? {
+        ...session,
+        phase: cancelled ? 'cancelled' : 'failed',
+        progress,
+        error: cancelled ? undefined : message,
+      } : session);
+      if (cancelled) {
+        toast.info(`Generation cancelled. ${progress?.generatedCount || 0} partial cases were kept.`);
+      } else {
+        toast.error(`AI generation failed: ${message}`);
+      }
+      throw generationError;
     } finally {
-      options.signal?.removeEventListener('abort', requestCancellation);
+      controller.signal.removeEventListener('abort', requestCancellation);
+      options.signal?.removeEventListener('abort', relayExternalAbort);
+      if (testcaseGenerationControllerRef.current === controller) {
+        testcaseGenerationControllerRef.current = null;
+      }
+      testcaseGenerationBusyRef.current = false;
     }
   };
+
+  const cancelTestcaseGeneration = () => {
+    if (!testcaseGenerationBusyRef.current) return;
+    setTestcaseGeneration((session) => session ? { ...session, phase: 'cancelling' } : session);
+    testcaseGenerationControllerRef.current?.abort();
+  };
+
+  const testcaseGenerationActive = testcaseGeneration?.phase === 'starting'
+    || testcaseGeneration?.phase === 'running'
+    || testcaseGeneration?.phase === 'cancelling';
 
   const createTestCase = async (input: Partial<TestCase>, packId?: string | null): Promise<TestCase> => {
     const suiteId = suitesByProject.current[currentProject.id];
@@ -620,7 +775,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return mapped;
   };
 
-  const importCases = async (csvContent: string, fileName: string, packId: string | null): Promise<number> => {
+  const importCases = async (xlsxBase64: string, fileName: string, packId: string | null): Promise<number> => {
     const targetId = currentProject.defaultTargetId;
     const result = await post<{ persistedCaseIds?: string[] }>('/api/testcase-files/import', {
       projectId: currentProject.id,
@@ -628,11 +783,22 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       targetId,
       packId,
       url: getTargetUrl(currentProject.id, targetId, environment),
-      csvContent,
+      xlsxBase64,
       fileName,
     });
     await refresh();
     return result.persistedCaseIds?.length || 0;
+  };
+
+  const exportTestCases = async (caseIds: string[], packId: string | null): Promise<TestcaseExportBundle> => {
+    const suiteId = suitesByProject.current[currentProject.id];
+    if (!suiteId) throw new Error('The project has no Test Suite.');
+    return post<TestcaseExportBundle>('/api/testcase-files/export', {
+      projectId: currentProject.id,
+      suiteId,
+      packId,
+      caseIds,
+    });
   };
 
   const archiveTestCase = async (id: string) => {
@@ -677,8 +843,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     theme, toggleTheme: () => setTheme((value) => value === 'dark' ? 'light' : 'dark'), viewMode, setViewMode,
     loading, error, refresh, projects, createProject, currentProject, setCurrentProjectId, environment, setEnvironment,
     getTarget, getTargetUrl, setLocalTargetUrl, testCases, testPacks, runs, cycles, smokeIntent, requestSmokeRun,
-    clearSmokeIntent: () => setSmokeIntent(null), startRun, updateRunStatus, createSavedPack, updatePack, duplicatePack,
-    addCasesToPack, addGeneratedCases, createTestCase, updateTestCase, importCases, archiveTestCase, createCycle, updateCycle, saveManualExecution,
+    clearSmokeIntent: () => setSmokeIntent(null), startRun, generateRunReport, updateRunStatus, createTestPack, updatePack, duplicatePack,
+    addCasesToPack, addGeneratedCases, testcaseGeneration, testcaseGenerationActive, cancelTestcaseGeneration,
+    generationPanelRequest, requestGenerationPanel: () => setGenerationPanelRequest((value) => value + 1),
+    generationPanelVisible, setGenerationPanelVisible,
+    createTestCase, updateTestCase, importCases, exportTestCases, archiveTestCase, createCycle, updateCycle, saveManualExecution,
     aiStatus, checkAI, testAI, unloadAI,
   };
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

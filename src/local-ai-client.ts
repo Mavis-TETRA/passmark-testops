@@ -21,7 +21,23 @@ type OllamaChatResponse = {
     role?: string;
     content?: string;
   };
+  done?: boolean;
   error?: string;
+};
+
+export type LocalAIStreamProgress = {
+  chunks: number;
+  receivedChars: number;
+  elapsedMs: number;
+};
+
+type AskLocalAIOptions = {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  maxTokens?: number;
+  jsonMode?: boolean;
+  jsonSchema?: Record<string, unknown>;
+  onProgress?: (progress: LocalAIStreamProgress) => void;
 };
 
 type LocalAIConfig = {
@@ -156,15 +172,17 @@ export async function unloadLocalAIModel(): Promise<Record<string, unknown>> {
 
 export async function askLocalAI(
   messages: ChatMessage[],
-  options: { signal?: AbortSignal } = {}
+  options: AskLocalAIOptions = {}
 ): Promise<string> {
   const config = readLocalAIConfig();
+  const timeoutMs = options.timeoutMs || config.timeoutMs;
+  const maxTokens = options.maxTokens || config.maxTokens;
   const controller = new AbortController();
   let timedOut = false;
   const timeout = setTimeout(() => {
     timedOut = true;
     controller.abort();
-  }, config.timeoutMs);
+  }, timeoutMs);
   const cancel = () => controller.abort();
   options.signal?.addEventListener('abort', cancel, { once: true });
 
@@ -174,16 +192,37 @@ export async function askLocalAI(
     }
 
     if (config.provider === 'ollama') {
-      return await askOllama(config, messages, controller.signal);
+      return await askOllama(
+        config,
+        messages,
+        controller.signal,
+        maxTokens,
+        options.jsonMode,
+        options.jsonSchema,
+        options.onProgress
+      );
     }
 
-    return await askOpenAICompatible(config, messages, controller.signal);
+    const content = await askOpenAICompatible(
+      config,
+      messages,
+      controller.signal,
+      maxTokens,
+      options.jsonMode,
+      options.jsonSchema
+    );
+    options.onProgress?.({
+      chunks: 1,
+      receivedChars: content.length,
+      elapsedMs: 0,
+    });
+    return content;
   } catch (error) {
     if (error instanceof Error && (error.name === 'AbortError' || /aborted/i.test(error.message))) {
       if (options.signal?.aborted && !timedOut) {
         throw new Error('Local AI request was cancelled.');
       }
-      throw new Error(`Local AI timed out after ${Math.round(config.timeoutMs / 1000)} seconds. Try Quick coverage again or use a faster model.`);
+      throw new Error(`Local AI timed out after ${Math.round(timeoutMs / 1000)} seconds. Try Quick coverage again or use a faster model.`);
     }
     throw error;
   } finally {
@@ -195,7 +234,10 @@ export async function askLocalAI(
 async function askOpenAICompatible(
   config: LocalAIConfig,
   messages: ChatMessage[],
-  signal: AbortSignal
+  signal: AbortSignal,
+  maxTokens: number,
+  jsonMode = false,
+  jsonSchema?: Record<string, unknown>
 ): Promise<string> {
   const response = await fetch(`${config.baseUrl}/chat/completions`, {
     method: 'POST',
@@ -207,8 +249,20 @@ async function askOpenAICompatible(
     body: JSON.stringify({
       model: config.model,
       stream: false,
-      max_tokens: config.maxTokens,
+      max_tokens: maxTokens,
       temperature: config.temperature,
+      response_format: jsonSchema
+        ? {
+            type: 'json_schema',
+            json_schema: {
+              name: 'passmark_response',
+              strict: true,
+              schema: jsonSchema,
+            },
+          }
+        : jsonMode
+          ? { type: 'json_object' }
+          : undefined,
       messages,
     }),
   });
@@ -233,8 +287,13 @@ async function askOpenAICompatible(
 async function askOllama(
   config: LocalAIConfig,
   messages: ChatMessage[],
-  signal: AbortSignal
+  signal: AbortSignal,
+  maxTokens: number,
+  jsonMode = false,
+  jsonSchema?: Record<string, unknown>,
+  onProgress?: (progress: LocalAIStreamProgress) => void
 ): Promise<string> {
+  const startedAt = Date.now();
   const response = await fetch(`${config.baseUrl}/api/chat`, {
     method: 'POST',
     signal,
@@ -243,12 +302,13 @@ async function askOllama(
     },
     body: JSON.stringify({
       model: config.model,
-      stream: false,
+      stream: Boolean(onProgress),
+      format: jsonSchema || (jsonMode ? 'json' : undefined),
       keep_alive: config.keepAlive,
       messages,
       options: {
         num_ctx: config.contextTokens,
-        num_predict: config.maxTokens,
+        num_predict: maxTokens,
         num_thread: config.numThread,
         temperature: config.temperature,
       },
@@ -262,11 +322,61 @@ async function askOllama(
     );
   }
 
-  const data = (await response.json()) as OllamaChatResponse;
-  const content = data.message?.content;
+  if (!onProgress) {
+    const data = (await response.json()) as OllamaChatResponse;
+    const content = data.message?.content;
+
+    if (!content) {
+      throw new Error(`Ollama returned empty content: ${JSON.stringify(data)}`);
+    }
+
+    return content;
+  }
+
+  if (!response.body) {
+    throw new Error('Ollama returned no response stream.');
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let content = '';
+  let chunks = 0;
+
+  const consumeLine = (line: string) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+
+    const data = JSON.parse(trimmed) as OllamaChatResponse;
+    if (data.error) {
+      throw new Error(`Ollama stream failed: ${data.error}`);
+    }
+
+    const fragment = data.message?.content || '';
+    if (!fragment) return;
+
+    content += fragment;
+    chunks += 1;
+    onProgress({
+      chunks,
+      receivedChars: content.length,
+      elapsedMs: Date.now() - startedAt,
+    });
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value, { stream: !done });
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop() || '';
+    lines.forEach(consumeLine);
+    if (done) break;
+  }
+
+  consumeLine(buffer);
 
   if (!content) {
-    throw new Error(`Ollama returned empty content: ${JSON.stringify(data)}`);
+    throw new Error('Ollama returned an empty streamed response.');
   }
 
   return content;
