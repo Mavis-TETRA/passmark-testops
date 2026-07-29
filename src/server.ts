@@ -801,9 +801,9 @@ function readRuntimeConfigSummary(): Record<string, unknown> {
       minRows: MIN_TESTCASE_FILE_ROWS,
       defaultRows: DEFAULT_TESTCASE_FILE_ROWS,
       maxRows: MAX_TESTCASE_FILE_ROWS,
-      casesPerBatch: readConfigNumber('LOCAL_AI_CASES_PER_BATCH', 2),
-      batchTimeoutMs: readConfigNumber('LOCAL_AI_BATCH_TIMEOUT_MS', 90000),
-      batchMaxTokens: readConfigNumber('LOCAL_AI_BATCH_MAX_TOKENS', 512),
+      casesPerBatch: readConfigNumber('LOCAL_AI_CASES_PER_BATCH', 1),
+      batchTimeoutMs: readConfigNumber('LOCAL_AI_BATCH_TIMEOUT_MS', 120000),
+      batchMaxTokens: readConfigNumber('LOCAL_AI_BATCH_MAX_TOKENS', 192),
       csvEndpoint: 'POST /api/testcase-files/generate',
       importEndpoint: 'POST /api/testcase-files/import',
       runEndpoint: 'POST /api/testcase-files/run',
@@ -825,7 +825,7 @@ function readBody(request: http.IncomingMessage): Promise<Record<string, unknown
     request.on('data', (chunk) => {
       body += chunk;
 
-      if (body.length > 1024 * 1024) {
+      if (body.length > 8 * 1024 * 1024) {
         request.destroy(new Error('Request body is too large.'));
       }
     });
@@ -2229,6 +2229,54 @@ function testcaseRowsFromCases(cases: TestCaseDetail[]): TestcaseFileRow[] {
   }));
 }
 
+function testcaseRowsFromDbCases(cases: any[], project?: any): TestcaseFileRow[] {
+  return cases.map((testCase) => {
+    const steps = parseJsonValue<any[]>(testCase.steps, []);
+    return {
+      caseId: testCase.code || testCase.id,
+      projectId: project?.id || '',
+      projectName: project?.name || '',
+      module: 'General',
+      requirementId: '',
+      feature: 'Page behavior',
+      title: testCase.name || testCase.code || testCase.id,
+      objective: testCase.description || '',
+      interDependencies: '',
+      preconditions: 'Target URL is reachable and required account/session is available when applicable.',
+      testDataPreparation: '',
+      testData: '',
+      steps: steps.map((step, index) => {
+        const action = typeof step === 'string' ? step : step.action || step.title || step.detail || '';
+        const expected = typeof step === 'object' ? step.expected || '' : '';
+        return `${index + 1}. ${action}${expected ? `\n   Expected: ${expected}` : ''}`.trim();
+      }).filter(Boolean).join('\n'),
+      actionInputData: '',
+      expectedResult: testCase.expectedResult || '',
+      priority: testCase.priority || 'medium',
+      regression: 'yes',
+      platform: 'Web',
+      tools: testCase.automation === 'automated' ? 'Playwright Chromium' : '',
+      severity: testCase.severity || 'major',
+      testType: testCase.testType || 'functional',
+      automationCandidate: testCase.automation === 'automated' ? 'yes' : 'no',
+      automationKind: testCase.automationKind || (testCase.automation === 'automated' ? 'generic_visible_content' : 'manual'),
+      selector: '',
+      expectedText: '',
+      inputImage: '',
+      actualImage: '',
+      screenshotPolicy: 'on-failure',
+      status: '',
+      actualResult: testCase.actualResult || '',
+      defectId: testCase.defectId || '',
+      testerName: testCase.assignee || '',
+      reviewerName: testCase.reviewer || '',
+      reviewDate: '',
+      notes: testCase.notes || '',
+      durationMs: '',
+    };
+  });
+}
+
 function csvField(row: Record<string, string>, ...names: string[]): string {
   for (const name of names) {
     const value = row[name]?.trim();
@@ -2249,6 +2297,12 @@ const csvHeaderAliases: Record<string, string> = {
   name: 'title',
   expected: 'expectedResult',
   mode: 'automationKind',
+  automation: 'automationKind',
+  automationmode: 'automationKind',
+  expectedresults: 'expectedResult',
+  actualresults: 'actualResult',
+  teststeps: 'steps',
+  testcaseobjective: 'objective',
 };
 
 function canonicalCsvHeader(header: string): string {
@@ -2330,6 +2384,79 @@ function testcaseRowsFromCsv(csvContent: string): TestcaseFileRow[] {
   return rows;
 }
 
+function decodeXmlText(value: string): string {
+  return value
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
+function xlsxCellColumn(reference: string): number {
+  const letters = reference.replace(/[^A-Z]/gi, '').toUpperCase();
+  return [...letters].reduce((total, letter) => total * 26 + letter.charCodeAt(0) - 64, 0) - 1;
+}
+
+function xlsxTextRuns(xml: string): string {
+  return [...xml.matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)]
+    .map((match) => decodeXmlText(match[1]))
+    .join('');
+}
+
+async function testcaseRowsFromXlsx(buffer: Buffer): Promise<TestcaseFileRow[]> {
+  let zip: JSZip;
+  try {
+    zip = await JSZip.loadAsync(buffer);
+  } catch {
+    throw new Error('The uploaded file is not a valid Excel .xlsx workbook.');
+  }
+
+  const sharedStringsXml = await zip.file('xl/sharedStrings.xml')?.async('string');
+  const sharedStrings = sharedStringsXml
+    ? [...sharedStringsXml.matchAll(/<si(?:\s[^>]*)?>([\s\S]*?)<\/si>/g)].map((match) => xlsxTextRuns(match[1]))
+    : [];
+  const worksheetFiles = Object.keys(zip.files)
+    .filter((name) => /^xl\/worksheets\/sheet\d+\.xml$/i.test(name))
+    .sort((left, right) => Number(left.match(/\d+/)?.[0] || 0) - Number(right.match(/\d+/)?.[0] || 0));
+
+  for (const worksheetFile of worksheetFiles) {
+    const sheetXml = await zip.file(worksheetFile)?.async('string');
+    if (!sheetXml) continue;
+    const matrix = [...sheetXml.matchAll(/<row(?:\s[^>]*)?>([\s\S]*?)<\/row>/g)].map((rowMatch) => {
+      const row: string[] = [];
+      for (const cellMatch of rowMatch[1].matchAll(/<c\s([^>]*)>([\s\S]*?)<\/c>/g)) {
+        const attributes = cellMatch[1];
+        const body = cellMatch[2];
+        const reference = attributes.match(/\br="([^"]+)"/)?.[1] || '';
+        const type = attributes.match(/\bt="([^"]+)"/)?.[1] || '';
+        const column = reference ? xlsxCellColumn(reference) : row.length;
+        const rawValue = body.match(/<v>([\s\S]*?)<\/v>/)?.[1] || '';
+        const value = type === 's'
+          ? sharedStrings[Number(rawValue)] || ''
+          : type === 'inlineStr'
+            ? xlsxTextRuns(body)
+            : decodeXmlText(rawValue);
+        row[column] = value;
+      }
+      return row.map((value) => value || '');
+    });
+    const headerIndex = matrix.findIndex((row) => {
+      const headers = row.map(canonicalCsvHeader);
+      return headers.includes('caseId') && headers.includes('title');
+    });
+    if (headerIndex >= 0) {
+      const csv = matrix.slice(headerIndex)
+        .filter((row, index) => index === 0 || row.some((value) => value.trim()))
+        .map((row) => row.map(csvEscape).join(','))
+        .join('\n');
+      return testcaseRowsFromCsv(csv);
+    }
+  }
+
+  throw new Error('Excel is missing the required columns: Case ID and Test Case.');
+}
+
 function testcaseFileDir(): string {
   const dir = path.join(storageDir, 'testcase-files');
   fs.mkdirSync(dir, { recursive: true });
@@ -2365,6 +2492,7 @@ function mimeTypeForPath(filePath: string): string {
   const ext = path.extname(filePath).toLowerCase();
   const contentTypes: Record<string, string> = {
     '.csv': 'text/csv; charset=utf-8',
+    '.json': 'application/json; charset=utf-8',
     '.html': 'text/html; charset=utf-8',
     '.xls': 'application/vnd.ms-excel; charset=utf-8',
     '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -2445,7 +2573,7 @@ function officeImage(value?: string): string {
 function writeOfficeHtmlFile(
   rows: TestcaseFileRow[],
   prefix: string,
-  format: 'xls' | 'doc',
+  format: 'xls' | 'doc' | 'html',
   title = 'QC Testcase Document'
 ): { fileName: string; filePath: string } {
   const fileName = `${prefix}-${Date.now()}.${format}`;
@@ -2541,8 +2669,8 @@ function writeOfficeHtmlFile(
   return { fileName, filePath };
 }
 
-function writeOfficeCompanionFiles(rows: TestcaseFileRow[], prefix: string) {
-  const excel = writeOfficeHtmlFile(rows, prefix, 'xls', 'QC Testcase Workbook');
+async function writeOfficeCompanionFiles(rows: TestcaseFileRow[], prefix: string) {
+  const excel = await writeTestcaseXlsxFile(rows, prefix);
   const doc = writeOfficeHtmlFile(rows, prefix, 'doc', 'QC Testcase Document');
 
   return {
@@ -2853,6 +2981,179 @@ function xlsxSheet(rows: XlsxCellValue[][], widths: number[], freezeHeader = fal
   <sheetData>${rowXml}</sheetData>
   ${filter}
 </worksheet>`;
+}
+
+const testcaseXlsxColumns: Array<{ label: string; key: keyof TestcaseFileRow; width: number }> = [
+  { label: 'Case ID', key: 'caseId', width: 16 },
+  { label: 'Test Case', key: 'title', width: 38 },
+  { label: 'Objective', key: 'objective', width: 38 },
+  { label: 'Module', key: 'module', width: 18 },
+  { label: 'Feature', key: 'feature', width: 22 },
+  { label: 'Type', key: 'testType', width: 18 },
+  { label: 'Priority', key: 'priority', width: 14 },
+  { label: 'Severity', key: 'severity', width: 14 },
+  { label: 'Automation Candidate', key: 'automationCandidate', width: 21 },
+  { label: 'Automation Kind', key: 'automationKind', width: 24 },
+  { label: 'Preconditions', key: 'preconditions', width: 38 },
+  { label: 'Test Data', key: 'testData', width: 30 },
+  { label: 'Test Steps', key: 'steps', width: 48 },
+  { label: 'Expected Result', key: 'expectedResult', width: 48 },
+  { label: 'Status', key: 'status', width: 15 },
+  { label: 'Actual Result', key: 'actualResult', width: 40 },
+  { label: 'Defect ID', key: 'defectId', width: 16 },
+  { label: 'Assignee', key: 'testerName', width: 20 },
+  { label: 'Reviewer', key: 'reviewerName', width: 20 },
+  { label: 'Notes', key: 'notes', width: 38 },
+];
+
+function testcaseXlsxCell(column: keyof TestcaseFileRow, value: string, rowIndex: number): XlsxCellValue {
+  const normalized = value.toLowerCase();
+  if (column === 'automationKind' || column === 'automationCandidate') {
+    return { value, style: normalized === 'manual' || normalized === 'no' ? 3 : 2 };
+  }
+  if (column === 'priority' || column === 'severity') {
+    if (['critical', 'blocker', 'high'].includes(normalized)) return { value, style: 4 };
+  }
+  if (column === 'status') {
+    if (['passed', 'pass'].includes(normalized)) return { value, style: 2 };
+    if (['failed', 'fail', 'blocked'].includes(normalized)) return { value, style: 4 };
+  }
+  return { value, style: rowIndex % 2 === 0 ? 7 : 0 };
+}
+
+async function writeTestcaseXlsxFile(
+  rows: TestcaseFileRow[],
+  prefix = 'testcases',
+  context: { projectName?: string; packName?: string } = {}
+): Promise<{ fileName: string; filePath: string }> {
+  const stamp = Date.now();
+  const fileName = `${prefix}-${stamp}.xlsx`;
+  const filePath = testcaseFilePath(fileName);
+  const zip = new JSZip();
+  const header = (value: string): XlsxCellValue => ({ value, style: 1 });
+  const dataRows: XlsxCellValue[][] = [
+    testcaseXlsxColumns.map((column) => header(column.label)),
+    ...rows.map((row, rowIndex) => testcaseXlsxColumns.map((column) =>
+      testcaseXlsxCell(column.key, String(row[column.key] ?? ''), rowIndex)
+    )),
+  ];
+  const automated = rows.filter((row) => row.automationKind && row.automationKind !== 'manual').length;
+  const manual = rows.length - automated;
+  const summaryRows: XlsxCellValue[][] = [
+    [{ value: 'Passmark TestOps', style: 5 }, { value: 'Test Case Workbook', style: 5 }],
+    [{ value: 'Project', style: 6 }, context.projectName || rows[0]?.projectName || ''],
+    [{ value: 'Test Pack', style: 6 }, context.packName || 'Current filtered scope'],
+    [{ value: 'Exported at', style: 6 }, new Date().toISOString()],
+    [{ value: 'Total cases', style: 6 }, rows.length],
+    [{ value: 'Automated', style: 6 }, automated],
+    [{ value: 'Manual', style: 6 }, manual],
+    [{ value: 'How to use', style: 6 }, 'Edit the Test Cases sheet, keep Case ID and Test Case, then import this .xlsx file back into Test Workspace.'],
+  ];
+  const guideRows: XlsxCellValue[][] = [
+    ['Field', 'Required', 'Accepted values / guidance'].map(header),
+    ['Case ID', 'Yes', 'Unique inside the project, for example TC-001. Existing IDs are updated on import.'],
+    ['Test Case', 'Yes', 'Short, clear test case title.'],
+    ['Type', 'No', 'Functional, UI, API, Accessibility, SEO, Performance, Security.'],
+    ['Priority', 'No', 'critical, high, medium, low. Default: medium.'],
+    ['Severity', 'No', 'blocker, critical, major, minor, trivial. Default: major.'],
+    ['Automation Candidate', 'No', 'yes, partial, no.'],
+    ['Automation Kind', 'No', 'manual or a supported automated runner kind.'],
+    ['Test Steps', 'No', 'One numbered action per line.'],
+    ['Expected Result', 'No', 'Expected observable outcome.'],
+    ['Important', '', 'Only Excel .xlsx files are accepted by Import Excel. Do not rename CSV or XLS files to .xlsx.'],
+  ];
+
+  zip.file('[Content_Types].xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/worksheets/sheet3.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+  <Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
+  <Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>
+</Types>`);
+  zip.file('_rels/.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/>
+</Relationships>`);
+  zip.file('docProps/core.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <dc:creator>Passmark TestOps</dc:creator><dc:title>Test Case Workbook</dc:title>
+  <dcterms:created xsi:type="dcterms:W3CDTF">${new Date().toISOString()}</dcterms:created>
+</cp:coreProperties>`);
+  zip.file('docProps/app.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"><Application>Passmark TestOps</Application></Properties>`);
+  zip.file('xl/workbook.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets><sheet name="Test Cases" sheetId="1" r:id="rId1"/><sheet name="Overview" sheetId="2" r:id="rId2"/><sheet name="Import Guide" sheetId="3" r:id="rId3"/></sheets>
+</workbook>`);
+  zip.file('xl/_rels/workbook.xml.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet3.xml"/>
+  <Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>`);
+  zip.file('xl/styles.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts count="6"><font><sz val="11"/><name val="Aptos"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Aptos"/></font><font><b/><color rgb="FF15803D"/></font><font><b/><color rgb="FF526071"/></font><font><b/><color rgb="FFB91C1C"/></font><font><b/><color rgb="FF4338CA"/><sz val="14"/></font></fonts>
+  <fills count="8"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF4338CA"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFF7F7FC"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFECFDF3"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFF3F4F6"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFEF2F2"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFEEF2FF"/></patternFill></fill></fills>
+  <borders count="2"><border/><border><left style="thin"><color rgb="FFD7DCE5"/></left><right style="thin"><color rgb="FFD7DCE5"/></right><top style="thin"><color rgb="FFD7DCE5"/></top><bottom style="thin"><color rgb="FFD7DCE5"/></bottom></border></borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs count="8">
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
+    <xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf>
+    <xf numFmtId="0" fontId="2" fillId="4" borderId="1" xfId="0" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
+    <xf numFmtId="0" fontId="3" fillId="5" borderId="1" xfId="0" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
+    <xf numFmtId="0" fontId="4" fillId="6" borderId="1" xfId="0" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
+    <xf numFmtId="0" fontId="5" fillId="7" borderId="0" xfId="0" applyAlignment="1"><alignment vertical="center"/></xf>
+    <xf numFmtId="0" fontId="5" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment vertical="top"/></xf>
+    <xf numFmtId="0" fontId="0" fillId="3" borderId="1" xfId="0" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
+  </cellXfs>
+  <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
+</styleSheet>`);
+  zip.file('xl/worksheets/sheet1.xml', xlsxSheet(dataRows, testcaseXlsxColumns.map((column) => column.width), true));
+  zip.file('xl/worksheets/sheet2.xml', xlsxSheet(summaryRows, [24, 84]));
+  zip.file('xl/worksheets/sheet3.xml', xlsxSheet(guideRows, [26, 14, 92], true));
+  fs.writeFileSync(filePath, await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 6 } }));
+  return { fileName, filePath };
+}
+
+function testcaseDownloadUrl(fileName: string): string {
+  return `/api/testcase-files/download/${encodeURIComponent(fileName)}`;
+}
+
+function writeTestcaseJsonFile(rows: TestcaseFileRow[], prefix: string): { fileName: string; filePath: string } {
+  const fileName = `${prefix}-${Date.now()}.json`;
+  const filePath = testcaseFilePath(fileName);
+  fs.writeFileSync(filePath, JSON.stringify({ exportedAt: new Date().toISOString(), total: rows.length, testCases: rows }, null, 2), 'utf-8');
+  return { fileName, filePath };
+}
+
+async function writeTestcaseExportBundle(
+  rows: TestcaseFileRow[],
+  prefix: string,
+  context: { projectName?: string; packName?: string } = {}
+) {
+  const csv = writeTestcaseCsvFile(rows, prefix);
+  const excel = await writeTestcaseXlsxFile(rows, prefix, context);
+  const html = writeOfficeHtmlFile(rows, prefix, 'html', `${context.packName || 'Test Case'} Report`);
+  const pdf = await writePdfReport(prefix, html.filePath, Date.now());
+  const doc = writeOfficeHtmlFile(rows, prefix, 'doc', `${context.packName || 'Test Case'} Review Document`);
+  const json = writeTestcaseJsonFile(rows, prefix);
+  return {
+    htmlUrl: testcaseDownloadUrl(html.fileName),
+    pdfUrl: testcaseDownloadUrl(pdf.fileName),
+    excelUrl: testcaseDownloadUrl(excel.fileName),
+    wordUrl: testcaseDownloadUrl(doc.fileName),
+    csvUrl: testcaseDownloadUrl(csv.fileName),
+    jsonUrl: testcaseDownloadUrl(json.fileName),
+  };
 }
 
 async function writeXlsxReport(run: any, cases: RichReportCase[], stamp: number): Promise<{ fileName: string; filePath: string }> {
@@ -3419,18 +3720,44 @@ function buildProfessionalTestcasePrompt(
 ): string {
   const batchRequest = userRequest
     .split(/\r?\n/)
-    .filter((line) => !/^\s*(?:generate|coverage target:).*?(?:approximately|~)\s*\d+\b/i.test(line))
+    .map((line) => line
+      .replace(/\bgenerate\s+(?:approximately|about|around|~)\s*\d+\s*(?:focused\s+)?test\s*cases?\.?/ig, '')
+      .replace(/\bcoverage\s+target:\s*(?:approximately|about|around|~)\s*\d+\s*(?:cases?)?\.?/ig, '')
+      .trim())
+    .filter(Boolean)
     .join('\n')
     .trim();
+  const requestedType = batchRequest.match(/test type:\s*(functional|ui|api|accessibility|seo|performance|security)/i)?.[1]?.toLowerCase()
+    || 'functional';
+  const coverageFocuses = [
+    'primary success path',
+    'invalid input rejection',
+    'required field validation',
+    'session or state transition',
+    'boundary input behavior',
+    'error handling and recovery',
+    'authorization or access control',
+    'clear user feedback',
+    'data persistence or consistency',
+    'cross-browser or device behavior',
+  ];
+  const coverageFocus = coverageFocuses[startIndex % coverageFocuses.length];
+  const caseIdentity = `TC-${String(startIndex + 1).padStart(3, '0')}`;
+  const automationKinds = requestedType === 'seo'
+    ? 'title_exists,meta_description_exists,canonical_exists,h1_exists,html_lang_exists'
+    : requestedType === 'performance'
+      ? 'page_load_performance'
+      : requestedType === 'accessibility'
+        ? 'selector_visible,image_alt_text,html_lang_exists,manual'
+        : requestedType === 'api' || requestedType === 'security'
+          ? 'manual'
+          : 'page_load,selector_visible,body_text_contains,form_validation,generic_visible_content,manual';
 
-  return `Return compact JSON only: {"n":${count},"cases":[{"t":"short unique title","e":"specific expected result","k":"automation kind","y":"functional|ui|api|accessibility|seo|performance|security","p":"high|medium|low","s":"critical|major|minor|trivial"}]}.
-IMPORTANT BATCH RULE: return exactly ${count} entries in "cases". This batch size overrides any overall coverage count from the request.
-Create exactly ${count} professional QA cases numbered conceptually ${startIndex + 1}-${startIndex + count} for ${url}.
-Allowed k: manual,page_load,page_load_performance,title_exists,selector_visible,body_text_contains,meta_description_exists,meta_description_length,canonical_exists,h1_exists,html_lang_exists,viewport_exists,link_health_basic,image_resources_ok,image_alt_text,no_console_errors,no_page_errors,form_validation,generic_visible_content.
-Use the Test type requested by the user as y for every case. Use page_load_performance for safe performance checks; never generate load or stress traffic.
-Mix positive, negative and edge coverage when relevant. No destructive, load or stress tests. Do not invent credentials. Avoid duplicate titles.
-${existingTitles.length ? `Do not repeat these existing titles: ${existingTitles.slice(-20).join(' | ')}.` : ''}
-Suite: ${suite?.name || 'General'} (${suite?.type || target?.type || 'web'}). Request: ${batchRequest || 'Create focused test cases.'}`;
+  return `Output one compact test case as JSON. Case: ${caseIdentity}. Focus: ${coverageFocus}. The title must clearly reflect this focus. Allowed k: ${automationKinds}.
+Target: ${url}. Suite: ${suite?.name || 'General'} (${suite?.type || target?.type || 'web'}).
+Requirement: ${batchRequest || 'Create a focused test case.'}
+${existingTitles.length ? `Forbidden titles: ${existingTitles.slice(-10).join(' | ')}.` : ''}
+No prose, credentials, destructive actions, load or stress traffic.`;
 }
 
 function normalizeCaseIds(rows: TestcaseFileRow[]): TestcaseFileRow[] {
@@ -3543,9 +3870,9 @@ async function generateProfessionalTestcaseFile(
   const aiResponses: string[] = [];
   const generatedRows: TestcaseFileRow[] = [];
   const seenTitles = new Set<string>();
-  const configuredBatchSize = Math.max(1, Math.min(4, readConfigNumber('LOCAL_AI_CASES_PER_BATCH', 2)));
-  const batchTimeoutMs = readConfigNumber('LOCAL_AI_BATCH_TIMEOUT_MS', 90000);
-  const batchMaxTokens = readConfigNumber('LOCAL_AI_BATCH_MAX_TOKENS', 512);
+  const configuredBatchSize = Math.max(1, Math.min(4, readConfigNumber('LOCAL_AI_CASES_PER_BATCH', 1)));
+  const batchTimeoutMs = readConfigNumber('LOCAL_AI_BATCH_TIMEOUT_MS', 120000);
+  const batchMaxTokens = readConfigNumber('LOCAL_AI_BATCH_MAX_TOKENS', 192);
   const estimatedBatches = Math.max(1, Math.ceil(targetCount / configuredBatchSize));
   const maxAttempts = estimatedBatches + 2;
   let attempts = 0;
@@ -3605,6 +3932,52 @@ async function generateProfessionalTestcaseFile(
           signal: options.signal,
           timeoutMs: batchTimeoutMs,
           maxTokens: batchMaxTokens,
+          jsonMode: true,
+          jsonSchema: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              cases: {
+                type: 'array',
+                minItems: 1,
+                maxItems: 1,
+                items: {
+                  type: 'object',
+                  additionalProperties: false,
+                  properties: {
+                    t: { type: 'string' },
+                    e: { type: 'string' },
+                    k: {
+                      type: 'string',
+                      enum: [
+                        'manual',
+                        'page_load',
+                        'page_load_performance',
+                        'title_exists',
+                        'selector_visible',
+                        'body_text_contains',
+                        'meta_description_exists',
+                        'canonical_exists',
+                        'h1_exists',
+                        'html_lang_exists',
+                        'image_alt_text',
+                        'form_validation',
+                        'generic_visible_content',
+                      ],
+                    },
+                    y: {
+                      type: 'string',
+                      enum: ['functional', 'ui', 'api', 'accessibility', 'seo', 'performance', 'security'],
+                    },
+                    p: { type: 'string', enum: ['high', 'medium', 'low'] },
+                    s: { type: 'string', enum: ['critical', 'major', 'minor', 'trivial'] },
+                  },
+                  required: ['t', 'e', 'k', 'y', 'p', 's'],
+                },
+              },
+            },
+            required: ['cases'],
+          },
           onProgress: (activity) => {
             const now = Date.now();
             if (now - lastActivityUpdate < 500 && activity.receivedChars > 1) return;
@@ -4895,7 +5268,7 @@ async function executeTestcaseGenerationJob(job: TestcaseGenerationJob) {
 
     const rows = result.rows;
     const file = writeTestcaseCsvFile(rows, 'ai-testcases');
-    const officeFiles = writeOfficeCompanionFiles(rows, 'ai-testcases');
+    const officeFiles = await writeOfficeCompanionFiles(rows, 'ai-testcases');
     const historyRun = await saveTestcaseFileHistory({
       url: job.url,
       rows,
@@ -5594,6 +5967,17 @@ const server = http.createServer(async (request, response) => {
 
     if (request.method === 'POST' && requestUrl.pathname === '/api/testcase-files/generate') {
       const body = await readBody(request);
+      const activeGeneration = Array.from(testcaseGenerationJobs.values()).find(
+        (job) => job.status === 'queued' || job.status === 'running'
+      );
+      if (activeGeneration) {
+        sendError(
+          response,
+          409,
+          `Another Local AI generation is already ${activeGeneration.status}. Wait for it to finish or cancel it before starting a new one.`
+        );
+        return;
+      }
       const { project, suite, target } = await resolveProjectSuiteTargetContext(body.projectId, body.suiteId, body.targetId);
       const packId = typeof body.packId === 'string' ? body.packId.trim() : '';
       if (!packId) {
@@ -5613,7 +5997,7 @@ const server = http.createServer(async (request, response) => {
         requestText,
       ].filter(Boolean).join('\n\n'), suite);
       const targetCount = requestedTestcaseCount(userRequest);
-      const casesPerBatch = Math.max(1, Math.min(4, readConfigNumber('LOCAL_AI_CASES_PER_BATCH', 2)));
+      const casesPerBatch = Math.max(1, Math.min(4, readConfigNumber('LOCAL_AI_CASES_PER_BATCH', 1)));
       const estimatedBatches = Math.max(1, Math.ceil(targetCount / casesPerBatch));
       const now = new Date().toISOString();
       const job: TestcaseGenerationJob = {
@@ -5644,16 +6028,66 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
+    if (request.method === 'POST' && requestUrl.pathname === '/api/testcase-files/export') {
+      const body = await readBody(request);
+      const suiteId = typeof body.suiteId === 'string' ? body.suiteId : '';
+      const caseIds = Array.isArray(body.caseIds)
+        ? body.caseIds.filter((id): id is string => typeof id === 'string')
+        : [];
+      if (!suiteId) {
+        sendError(response, 400, 'suiteId is required');
+        return;
+      }
+      const suite = await prisma.testSuite.findUnique({ where: { id: suiteId }, include: { project: true } });
+      if (!suite || (typeof body.projectId === 'string' && body.projectId && suite.projectId !== body.projectId)) {
+        sendError(response, 404, 'Test Suite was not found for this project.');
+        return;
+      }
+      const pack = typeof body.packId === 'string' && body.packId
+        ? await prisma.testPack.findUnique({ where: { id: body.packId } })
+        : null;
+      const cases = await prisma.testCase.findMany({
+        where: { suiteId, enabled: true, id: { in: caseIds } },
+        orderBy: { code: 'asc' },
+      });
+      const rows = testcaseRowsFromDbCases(cases, suite.project);
+      const safePackName = (pack?.name || 'filtered')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '')
+        .slice(0, 48) || 'filtered';
+      const formats = await writeTestcaseExportBundle(rows, `testcases-${safePackName}`, {
+        projectName: suite.project.name,
+        packName: pack?.name || 'Filtered test cases',
+      });
+      sendJson(response, 200, {
+        ...formats,
+        total: rows.length,
+        projectName: suite.project.name,
+        packName: pack?.name || 'Filtered test cases',
+      });
+      return;
+    }
+
     if (request.method === 'POST' && requestUrl.pathname === '/api/testcase-files/import') {
       const body = await readBody(request);
       const { project, suite, target } = await resolveProjectSuiteTargetContext(body.projectId, body.suiteId, body.targetId);
       const url = resolveRunUrl(body.url, project, target);
-      const csvContent = typeof body.csvContent === 'string' ? body.csvContent : '';
-      const rows = testcaseRowsFromCsv(csvContent);
+      const fileName = typeof body.fileName === 'string' ? body.fileName : '';
+      if (path.extname(fileName).toLowerCase() !== '.xlsx') {
+        sendError(response, 400, 'Import Excel only accepts a native .xlsx file.');
+        return;
+      }
+      const xlsxBase64 = typeof body.xlsxBase64 === 'string' ? body.xlsxBase64 : '';
+      if (!xlsxBase64) {
+        sendError(response, 400, 'Excel file content is required.');
+        return;
+      }
+      const rows = await testcaseRowsFromXlsx(Buffer.from(xlsxBase64, 'base64'));
       const persistedCaseIds = await persistWorkspaceRows(suite?.id, rows);
       await addCaseIdsToPack(body.packId, persistedCaseIds);
       const file = writeTestcaseCsvFile(rows, 'imported-testcases');
-      const officeFiles = writeOfficeCompanionFiles(rows, 'imported-testcases');
+      const officeFiles = await writeOfficeCompanionFiles(rows, 'imported-testcases');
       const historyRun = await saveTestcaseFileHistory({
         url,
         rows,
@@ -5661,7 +6095,7 @@ const server = http.createServer(async (request, response) => {
         excelFileName: officeFiles.excelFileName,
         docFileName: officeFiles.docFileName,
         aiExplanation: `Imported ${rows.length} testcase rows. This record is a testcase file only and has not run automation yet.`,
-        userRequest: `Imported testcase file: ${typeof body.fileName === 'string' ? body.fileName : file.fileName}`,
+        userRequest: `Imported testcase file: ${fileName || file.fileName}`,
         context: {
           projectId: project?.id,
           projectName: project?.name,
@@ -5700,7 +6134,7 @@ const server = http.createServer(async (request, response) => {
       const auth = resolveEnvironmentAuth(runEnvironment, body.auth);
       const fileName = typeof body.fileName === 'string' ? body.fileName : 'imported-testcases.csv';
       const testcaseFile = writeTestcaseCsvFile(importedCases, 'run-source-testcases');
-      const testcaseOfficeFiles = writeOfficeCompanionFiles(importedCases, 'run-source-testcases');
+      const testcaseOfficeFiles = await writeOfficeCompanionFiles(importedCases, 'run-source-testcases');
       const job: RunQueueJob = {
         runId: newId('run'),
         url,

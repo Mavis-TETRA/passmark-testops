@@ -35,6 +35,8 @@ type AskLocalAIOptions = {
   signal?: AbortSignal;
   timeoutMs?: number;
   maxTokens?: number;
+  jsonMode?: boolean;
+  jsonSchema?: Record<string, unknown>;
   onProgress?: (progress: LocalAIStreamProgress) => void;
 };
 
@@ -190,10 +192,25 @@ export async function askLocalAI(
     }
 
     if (config.provider === 'ollama') {
-      return await askOllama(config, messages, controller.signal, maxTokens, options.onProgress);
+      return await askOllama(
+        config,
+        messages,
+        controller.signal,
+        maxTokens,
+        options.jsonMode,
+        options.jsonSchema,
+        options.onProgress
+      );
     }
 
-    const content = await askOpenAICompatible(config, messages, controller.signal, maxTokens);
+    const content = await askOpenAICompatible(
+      config,
+      messages,
+      controller.signal,
+      maxTokens,
+      options.jsonMode,
+      options.jsonSchema
+    );
     options.onProgress?.({
       chunks: 1,
       receivedChars: content.length,
@@ -218,7 +235,9 @@ async function askOpenAICompatible(
   config: LocalAIConfig,
   messages: ChatMessage[],
   signal: AbortSignal,
-  maxTokens: number
+  maxTokens: number,
+  jsonMode = false,
+  jsonSchema?: Record<string, unknown>
 ): Promise<string> {
   const response = await fetch(`${config.baseUrl}/chat/completions`, {
     method: 'POST',
@@ -232,6 +251,18 @@ async function askOpenAICompatible(
       stream: false,
       max_tokens: maxTokens,
       temperature: config.temperature,
+      response_format: jsonSchema
+        ? {
+            type: 'json_schema',
+            json_schema: {
+              name: 'passmark_response',
+              strict: true,
+              schema: jsonSchema,
+            },
+          }
+        : jsonMode
+          ? { type: 'json_object' }
+          : undefined,
       messages,
     }),
   });
@@ -258,6 +289,8 @@ async function askOllama(
   messages: ChatMessage[],
   signal: AbortSignal,
   maxTokens: number,
+  jsonMode = false,
+  jsonSchema?: Record<string, unknown>,
   onProgress?: (progress: LocalAIStreamProgress) => void
 ): Promise<string> {
   const startedAt = Date.now();
@@ -270,6 +303,7 @@ async function askOllama(
     body: JSON.stringify({
       model: config.model,
       stream: Boolean(onProgress),
+      format: jsonSchema || (jsonMode ? 'json' : undefined),
       keep_alive: config.keepAlive,
       messages,
       options: {

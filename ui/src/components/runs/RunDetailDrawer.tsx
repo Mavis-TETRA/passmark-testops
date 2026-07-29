@@ -39,9 +39,16 @@ export function RunDetailDrawer({ run, onClose }: {run: TestRun | null;onClose: 
     }
   };
   const reportRun = generatedReportRun?.id === run.id ? generatedReportRun : run;
-  const hasReport = Boolean(reportRun.resultHtmlUrl || reportRun.resultPdfUrl || reportRun.resultExcelUrl || reportRun.resultDocUrl || reportRun.resultZipUrl || reportRun.resultCsvUrl);
+  const hasCompleteReport = [
+    reportRun.resultHtmlUrl,
+    reportRun.resultPdfUrl,
+    reportRun.resultExcelUrl,
+    reportRun.resultDocUrl,
+    reportRun.resultZipUrl,
+    reportRun.resultCsvUrl,
+  ].every(Boolean);
   const openReport = async () => {
-    if (hasReport) {
+    if (hasCompleteReport) {
       setReportOpen(true);
       return;
     }

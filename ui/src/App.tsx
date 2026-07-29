@@ -8,6 +8,7 @@ import { WorkspacePage } from "./components/pages/WorkspacePage";
 import { RunsPage } from "./components/pages/RunsPage";
 import { ReportsPage } from "./components/pages/ReportsPage";
 import { AlertTriangleIcon, RefreshCwIcon } from "lucide-react";
+import { AIGenerationProgressDock } from "./components/workspace/AIGenerationProgressDock";
 
 function Shell() {
   const { theme, error, loading, refresh } = useApp();
@@ -31,6 +32,7 @@ function Shell() {
           <Route path="*" element={<Navigate to="/projects" replace />} />
         </Routes>
       </main>
+      <AIGenerationProgressDock />
       <Toaster
         theme={theme}
         position="bottom-right"

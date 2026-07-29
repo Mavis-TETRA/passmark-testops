@@ -1,28 +1,30 @@
 import React, { useEffect, useState } from 'react';
-import { BoxesIcon, SparklesIcon } from 'lucide-react';
+import { AlertTriangleIcon, BoxesIcon, Globe2Icon, ServerIcon, SparklesIcon } from 'lucide-react';
 import type { CreateTestPackInput } from '../../context/AppContext';
-import type { EnvironmentName, Project } from '../../lib/types';
+import type { EnvironmentName, Project, Target } from '../../lib/types';
 import { Button } from '../ui/Button';
 import { Modal } from '../ui/Modal';
-
-const environments: EnvironmentName[] = ['Local', 'Development', 'Staging', 'Production'];
 
 export function CreateTestPackModal({
   open,
   onClose,
   project,
+  environment,
+  target,
+  targetUrl,
   onCreate,
 }: {
   open: boolean;
   onClose: () => void;
   project: Project;
+  environment: EnvironmentName;
+  target: Target | null;
+  targetUrl: string | null;
   onCreate: (input: CreateTestPackInput) => Promise<void>;
 }) {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [kind, setKind] = useState<CreateTestPackInput['kind']>('feature');
-  const [defaultEnvironment, setDefaultEnvironment] = useState<EnvironmentName | ''>('');
-  const [defaultTargetId, setDefaultTargetId] = useState('');
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -30,8 +32,6 @@ export function CreateTestPackModal({
     setName('');
     setDescription('');
     setKind('feature');
-    setDefaultEnvironment('');
-    setDefaultTargetId('');
   }, [open]);
 
   const submit = async () => {
@@ -43,8 +43,8 @@ export function CreateTestPackModal({
         description: description.trim(),
         kind,
         caseIds: [],
-        defaultEnvironment: defaultEnvironment || undefined,
-        defaultTargetId: defaultTargetId || undefined,
+        defaultEnvironment: environment,
+        defaultTargetId: target?.id,
       });
       onClose();
     } catch {
@@ -64,7 +64,7 @@ export function CreateTestPackModal({
       icon={<div className="flex h-9 w-9 items-center justify-center rounded-lg bg-accent-soft"><BoxesIcon className="h-5 w-5 text-accent" /></div>}
       footer={<>
         <Button variant="ghost" onClick={onClose}>Cancel</Button>
-        <Button variant="primary" disabled={!name.trim() || saving} onClick={() => void submit()}>
+        <Button variant="primary" disabled={!name.trim() || !targetUrl || saving} title={!targetUrl ? `No target URL is configured for ${environment}.` : undefined} onClick={() => void submit()}>
           <SparklesIcon className="h-4 w-4" />
           {saving ? 'Creating…' : 'Create and generate'}
         </Button>
@@ -98,22 +98,35 @@ export function CreateTestPackModal({
           />
         </label>
 
-        <div className="grid gap-3 sm:grid-cols-2">
-          <label className="block">
-            <span className="mb-1 block text-xs font-medium text-ink-2">Default environment</span>
-            <select value={defaultEnvironment} onChange={(event) => setDefaultEnvironment(event.target.value as EnvironmentName | '')} className="control">
-              <option value="">Use project default ({project.environment})</option>
-              {environments.map((item) => <option key={item}>{item}</option>)}
-            </select>
-          </label>
-          <label className="block">
-            <span className="mb-1 block text-xs font-medium text-ink-2">Default target</span>
-            <select value={defaultTargetId} onChange={(event) => setDefaultTargetId(event.target.value)} className="control">
-              <option value="">Use project default</option>
-              {project.targets.map((target) => <option key={target.id} value={target.id}>{target.name}</option>)}
-            </select>
-          </label>
-        </div>
+        <section aria-label="Automatic target context" className="overflow-hidden rounded-xl border border-line bg-surface-2/55">
+          <div className="flex items-center justify-between gap-3 border-b border-line px-3.5 py-2.5">
+            <div>
+              <div className="text-xs font-semibold text-ink">Automatic target context</div>
+              <div className="mt-0.5 text-2xs text-ink-3">Taken from the current project and environment.</div>
+            </div>
+            <span className="rounded-md border border-line bg-surface px-2 py-1 text-2xs font-semibold text-ink-2">{environment}</span>
+          </div>
+          <div className="grid gap-3 p-3.5 sm:grid-cols-2">
+            <div className="flex min-w-0 items-start gap-2.5">
+              <ServerIcon className="mt-0.5 h-4 w-4 shrink-0 text-ink-3" />
+              <div className="min-w-0">
+                <div className="text-2xs text-ink-3">Project</div>
+                <div className="truncate text-sm font-medium text-ink">{project.name}</div>
+              </div>
+            </div>
+            <div className="flex min-w-0 items-start gap-2.5">
+              <Globe2Icon className="mt-0.5 h-4 w-4 shrink-0 text-ink-3" />
+              <div className="min-w-0">
+                <div className="text-2xs text-ink-3">Target</div>
+                <div className="truncate text-sm font-medium text-ink">{target?.name || 'No target available'}</div>
+                {target && <div className="mt-0.5 text-2xs text-ink-3">{target.type}</div>}
+              </div>
+            </div>
+          </div>
+          {targetUrl
+            ? <div className="border-t border-line bg-surface px-3.5 py-2.5"><div className="text-2xs text-ink-3">URL used by AI and the test runner</div><div className="mt-1 break-all font-mono text-xs text-ink">{targetUrl}</div></div>
+            : <div className="flex items-start gap-2 border-t border-[rgb(var(--block))]/20 bg-[rgb(var(--block-soft))] px-3.5 py-2.5 text-xs text-ink-2"><AlertTriangleIcon className="mt-0.5 h-4 w-4 shrink-0 text-[rgb(var(--block))]" /><span>No target URL is configured for {environment}. Change the environment in the top bar or configure the Project target first.</span></div>}
+        </section>
 
         <div className="rounded-lg border border-accent/25 bg-accent-soft px-3 py-2.5 text-xs text-ink-2">
           After creation, the AI generator opens for this pack. Every valid batch is saved directly into it.

@@ -1,10 +1,10 @@
 ﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  AlertTriangleIcon, ArrowLeftIcon, DownloadIcon, LayersIcon, PanelLeftIcon, PlayIcon, PlusIcon, RefreshCwIcon,
-  SparklesIcon, UploadIcon, XIcon, ZapIcon,
+  AlertTriangleIcon, ArrowLeftIcon, BracesIcon, DownloadIcon, EyeIcon, FileSpreadsheetIcon, FileTextIcon,
+  LayersIcon, PanelLeftIcon, PlayIcon, PlusIcon, RefreshCwIcon, SparklesIcon, UploadIcon, XIcon, ZapIcon,
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { useApp } from '../../context/AppContext';
+import { useApp, type TestcaseExportBundle } from '../../context/AppContext';
 import type { TestCase, TestCycle, TestPack } from '../../lib/types';
 import { AIGeneratorModal } from '../workspace/AIGeneratorModal';
 import { FilterBar, EMPTY_FILTERS, type Filters } from '../workspace/FilterBar';
@@ -24,7 +24,9 @@ export function WorkspacePage() {
   const {
     viewMode, currentProject, environment, getTargetUrl, testCases, testPacks, cycles,
     addCasesToPack, addGeneratedCases, createTestPack, createTestCase, importCases,
-    updateTestCase, archiveTestCase, startRun,
+    exportTestCases, updateTestCase, archiveTestCase, startRun,
+    testcaseGeneration, testcaseGenerationActive, generationPanelRequest, requestGenerationPanel,
+    setGenerationPanelVisible, setCurrentProjectId,
   } = useApp();
   const packs = useMemo(() => testPacks.filter((pack) => pack.projectId === currentProject.id && !pack.archived), [currentProject.id, testPacks]);
   const workspacePacks = useMemo(
@@ -47,7 +49,11 @@ export function WorkspacePage() {
   const [runConfirm, setRunConfirm] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [exportBundle, setExportBundle] = useState<TestcaseExportBundle | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const handledGenerationPanelRequest = useRef(0);
 
   useEffect(() => {
     setActivePackId('');
@@ -69,6 +75,38 @@ export function WorkspacePage() {
   }, [activePackId]);
 
   const activePack = workspacePacks.find((pack) => pack.id === activePackId) || null;
+
+  useEffect(() => {
+    setGenerationPanelVisible(aiOpen && Boolean(activePack));
+    return () => setGenerationPanelVisible(false);
+  }, [activePack, aiOpen, setGenerationPanelVisible]);
+
+  useEffect(() => {
+    if (!generationPanelRequest || generationPanelRequest === handledGenerationPanelRequest.current) return;
+    if (!testcaseGeneration || testcaseGeneration.projectId !== currentProject.id) return;
+    const runningPack = workspacePacks.find((pack) => pack.id === testcaseGeneration.packId);
+    if (!runningPack) return;
+    handledGenerationPanelRequest.current = generationPanelRequest;
+    setActivePackId(runningPack.id);
+    setAiOpen(true);
+  }, [currentProject.id, generationPanelRequest, testcaseGeneration?.packId, testcaseGeneration?.projectId, workspacePacks]);
+
+  const openGenerator = (pack: TestPack | null = activePack) => {
+    if (testcaseGenerationActive && testcaseGeneration) {
+      if (testcaseGeneration.projectId !== currentProject.id) {
+        setCurrentProjectId(testcaseGeneration.projectId, { syncEnvironment: false });
+        requestGenerationPanel();
+        return;
+      }
+      const runningPack = workspacePacks.find((item) => item.id === testcaseGeneration.packId);
+      if (runningPack) setActivePackId(runningPack.id);
+      setAiOpen(true);
+      return;
+    }
+    if (pack) setActivePackId(pack.id);
+    setAiOpen(true);
+  };
+
   const visible = useMemo(() => testCases.filter((testCase) => {
     if (!activePack || !activePack.caseIds.includes(testCase.id)) return false;
     const haystack = `${testCase.code || testCase.id} ${testCase.name} ${testCase.module}`.toLowerCase();
@@ -90,6 +128,13 @@ export function WorkspacePage() {
     ? preferredTargetId
     : currentProject.targets.find((target) => target.urls[runEnvironment])?.id || null;
   const targetUrl = getTargetUrl(currentProject.id, targetId, runEnvironment);
+  const projectDefaultTarget = currentProject.targets.find((target) => target.id === currentProject.defaultTargetId)
+    || currentProject.targets[0]
+    || null;
+  const createPackTarget = currentProject.targets.find((target) => target.id === currentProject.defaultTargetId && target.urls[environment])
+    || currentProject.targets.find((target) => target.urls[environment])
+    || projectDefaultTarget;
+  const createPackTargetUrl = createPackTarget?.urls[environment] || null;
   const smokePack = packs.find((pack) => pack.name.toLowerCase() === 'smoke');
   const regressionPack = packs.find((pack) => pack.name.toLowerCase() === 'regression');
   const openIndex = openCase ? visible.findIndex((testCase) => testCase.id === openCase.id) : -1;
@@ -121,15 +166,34 @@ export function WorkspacePage() {
   const importFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
+    if (!file.name.toLowerCase().endsWith('.xlsx')) {
+      toast.error('Import Excel only accepts a native .xlsx file.');
+      event.target.value = '';
+      return;
+    }
     setImporting(true);
     try {
-      const count = await importCases(await file.text(), file.name, activePack?.id || null);
+      const count = await importCases(arrayBufferToBase64(await file.arrayBuffer()), file.name, activePack?.id || null);
       toast.success(`${count} cases imported and saved.`);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : String(error));
     } finally {
       setImporting(false);
       event.target.value = '';
+    }
+  };
+  const openExport = async () => {
+    setExportOpen(true);
+    setExporting(true);
+    setExportBundle(null);
+    try {
+      const bundle = await exportTestCases(visible.map((testCase) => testCase.id), activePack?.id || null);
+      setExportBundle(bundle);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error));
+      setExportOpen(false);
+    } finally {
+      setExporting(false);
     }
   };
   const addCaseToPack = (pack: TestPack | undefined, testCase: TestCase) => {
@@ -179,7 +243,7 @@ export function WorkspacePage() {
           testCases={testCases}
           onCreate={() => setCreatePackOpen(true)}
           onOpen={(pack) => setActivePackId(pack.id)}
-          onGenerate={(pack) => { setActivePackId(pack.id); setAiOpen(true); }}
+          onGenerate={(pack) => openGenerator(pack)}
           onManage={setPackOpen}
         />
       ) : (
@@ -196,11 +260,11 @@ export function WorkspacePage() {
               <button onClick={() => setSidebarOpen(true)} aria-label="Open Test Packs" className="flex h-8 w-8 items-center justify-center rounded-lg border border-line text-ink-2 md:hidden"><PanelLeftIcon className="h-4 w-4" /></button>
               <span className="max-w-56 truncate text-sm font-semibold text-ink">{activePack.name}</span>
               {viewMode === 'qa' ? <>
-                <Button variant="primary" size="sm" onClick={() => setAiOpen(true)}><SparklesIcon className="h-3.5 w-3.5" /> Generate with AI</Button>
+                <Button variant="primary" size="sm" onClick={() => openGenerator()}><SparklesIcon className="h-3.5 w-3.5" /> Generate with AI</Button>
                 <Button variant="secondary" size="sm" onClick={() => setCreateOpen(true)}><PlusIcon className="h-3.5 w-3.5" /> Create Case</Button>
-                <input ref={fileInput} type="file" accept=".csv,text/csv" hidden onChange={importFile} />
-                <Button variant="ghost" size="sm" disabled={importing} onClick={() => fileInput.current?.click()}><UploadIcon className={`h-3.5 w-3.5 ${importing ? 'animate-pulse' : ''}`} /> Import CSV</Button>
-                <Button variant="ghost" size="sm" onClick={() => downloadCases(visible)}><DownloadIcon className="h-3.5 w-3.5" /> Export</Button>
+                <input ref={fileInput} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={importFile} />
+                <Button variant="ghost" size="sm" disabled={importing} onClick={() => fileInput.current?.click()}><UploadIcon className={`h-3.5 w-3.5 ${importing ? 'animate-pulse' : ''}`} /> {importing ? 'Importing…' : 'Import Excel'}</Button>
+                <Button variant="ghost" size="sm" disabled={exporting} onClick={() => void openExport()}><DownloadIcon className={`h-3.5 w-3.5 ${exporting ? 'animate-pulse' : ''}`} /> {exporting ? 'Preparing…' : 'Export'}</Button>
                 <Button variant="ghost" size="sm" onClick={() => setCycleOpen(true)}>Test Cycles</Button>
               </> : <span className="text-xs text-ink-3">Dev View · inspect cases and run the current pack</span>}
               <div className="ml-auto"><Button variant="secondary" size="sm" disabled={!runCases.length || !automated || !targetUrl} title={!targetUrl ? 'No valid target' : !automated ? 'No automated cases in scope' : undefined} onClick={() => setRunConfirm(true)}><PlayIcon className="h-3.5 w-3.5" />{selectedCases.length ? `Run ${selectedCases.length} selected` : `Run ${visible.length} cases`}</Button></div>
@@ -215,7 +279,7 @@ export function WorkspacePage() {
                   icon={SparklesIcon}
                   title="This Test Pack is empty"
                   description="Describe the feature or requirement and let Local AI generate focused test cases directly into this pack."
-                  action={viewMode === 'qa' ? <Button variant="primary" onClick={() => setAiOpen(true)}><SparklesIcon className="h-4 w-4" /> Generate cases with AI</Button> : undefined}
+                  action={viewMode === 'qa' ? <Button variant="primary" onClick={() => openGenerator()}><SparklesIcon className="h-4 w-4" /> Generate cases with AI</Button> : undefined}
                 />
               )}
             </div>
@@ -242,13 +306,17 @@ export function WorkspacePage() {
         if (openCase?.id === updated.id) setOpenCase(updated);
         toast.success(`${updated.code || updated.id} updated.`);
       }} />
-      <CreateTestPackModal open={createPackOpen} onClose={() => setCreatePackOpen(false)} project={currentProject} onCreate={async (input) => {
+      <CreateTestPackModal open={createPackOpen} onClose={() => setCreatePackOpen(false)} project={currentProject} environment={environment} target={createPackTarget} targetUrl={createPackTargetUrl} onCreate={async (input) => {
         try {
           const created = await createTestPack(input);
           setCreatePackOpen(false);
           setActivePackId(created.id);
-          setAiOpen(true);
-          toast.success(`${created.name} created. Describe the scope and generate its cases.`);
+          if (testcaseGenerationActive) {
+            toast.info(`${created.name} created. Wait for the current AI generation to finish before starting another.`);
+          } else {
+            setAiOpen(true);
+            toast.success(`${created.name} created. Describe the scope and generate its cases.`);
+          }
         } catch (error) {
           toast.error(error instanceof Error ? error.message : String(error));
           throw error;
@@ -263,6 +331,7 @@ export function WorkspacePage() {
       <TestPackDrawer pack={managedPack} onClose={() => setPackOpen(null)} onRun={(pack) => { setActivePackId(pack.id); setPackOpen(null); setRunConfirm(true); }} />
       <TestCycleDrawer open={cycleOpen} onClose={() => setCycleOpen(false)} onStart={chooseCycle} />
       <RunSummaryModal open={runConfirm} onClose={() => setRunConfirm(false)} onConfirm={queueRun} pack={activePack?.name || 'Current pack'} environment={runEnvironment} target={targetUrl} total={runCases.length} automated={automated} manual={runCases.length - automated} />
+      <TestcaseExportModal open={exportOpen} onClose={() => setExportOpen(false)} bundle={exportBundle} loading={exporting} total={visible.length} packName={activePack?.name || 'Test cases'} />
       <ConfirmModal open={Boolean(archiveTarget)} onClose={() => setArchiveTarget(null)} onConfirm={() => { void confirmArchive(); }} title="Archive test case?" confirmLabel="Archive" destructive message="The case is removed from active packs while historical results stay available." />
     </>
   );
@@ -290,6 +359,38 @@ function RunSummaryModal({ open, onClose, onConfirm, pack, environment, target, 
 
 function Summary({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return <div className="rounded-lg border border-line bg-surface px-3 py-2"><div className="text-2xs text-ink-3">{label}</div><div className={`mt-0.5 truncate text-sm font-medium text-ink ${mono ? 'font-mono text-xs' : ''}`}>{value}</div></div>;
+}
+
+function TestcaseExportModal({ open, onClose, bundle, loading, total, packName }: {
+  open: boolean;
+  onClose: () => void;
+  bundle: TestcaseExportBundle | null;
+  loading: boolean;
+  total: number;
+  packName: string;
+}) {
+  const formats = bundle ? [
+    { label: 'View HTML report', description: 'Open a printable test case catalog in the browser', url: bundle.htmlUrl, icon: EyeIcon },
+    { label: 'Download PDF', description: 'Shareable report for review and sign-off', url: bundle.pdfUrl, icon: FileTextIcon },
+    { label: 'Download Excel', description: 'Styled native XLSX that can be imported again', url: bundle.excelUrl, icon: FileSpreadsheetIcon },
+    { label: 'Download Word', description: 'Editable review document for the QA team', url: bundle.wordUrl, icon: FileTextIcon },
+    { label: 'Download CSV', description: 'Raw tabular data for other tools', url: bundle.csvUrl, icon: DownloadIcon },
+    { label: 'Download JSON', description: 'Structured data for scripts and integrations', url: bundle.jsonUrl, icon: BracesIcon },
+  ] : [];
+  return <Modal open={open} onClose={onClose} title="Export test cases" subtitle={`${packName} · ${total} filtered cases`} size="max-w-xl">
+    {loading ? <div className="flex min-h-52 flex-col items-center justify-center gap-3 p-8 text-center">
+      <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-accent-soft text-accent"><RefreshCwIcon className="h-5 w-5 animate-spin" /></span>
+      <div><div className="text-sm font-semibold text-ink">Preparing all report formats…</div><div className="mt-1 text-xs text-ink-3">Excel, PDF, Word and data files are generated from the current filtered scope.</div></div>
+    </div> : <div className="grid gap-2 p-4 sm:grid-cols-2">
+      {formats.map((format) => {
+        const Icon = format.icon;
+        return <button key={format.label} onClick={() => window.open(format.url, '_blank', 'noopener,noreferrer')} className="flex min-h-20 items-start gap-3 rounded-lg border border-line bg-surface p-3 text-left hover:border-line-strong hover:bg-surface-2">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-accent-soft text-accent"><Icon className="h-4 w-4" /></span>
+          <span><span className="block text-sm font-semibold text-ink">{format.label}</span><span className="mt-0.5 block text-2xs leading-4 text-ink-3">{format.description}</span></span>
+        </button>;
+      })}
+    </div>}
+  </Modal>;
 }
 
 function CreateCaseModal({ open, onClose, onCreate }: { open: boolean; onClose: () => void; onCreate: (input: Partial<TestCase>) => Promise<void> }) {
@@ -352,11 +453,13 @@ function TestTypeSelect({ value, onChange }: { value: TestCase['type']; onChange
   return <select value={value} onChange={(event) => onChange(event.target.value as TestCase['type'])} className="control"><option>Functional</option><option>UI</option><option>API</option><option>Accessibility</option><option>SEO</option><option>Performance</option><option>Security</option></select>;
 }
 
-function downloadCases(cases: TestCase[]) {
-  const rows = [['Case ID', 'Name', 'Priority', 'Severity', 'Mode', 'Expected'], ...cases.map((testCase) => [testCase.code || testCase.id, testCase.name, testCase.priority, testCase.severity, testCase.automation, testCase.expected])];
-  const csv = rows.map((row) => row.map((value) => `"${String(value || '').replace(/"/g, '""')}"`).join(',')).join('\n');
-  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
-  const anchor = document.createElement('a');
-  anchor.href = url; anchor.download = 'passmark-testcases.csv'; anchor.click(); URL.revokeObjectURL(url);
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return window.btoa(binary);
 }
 

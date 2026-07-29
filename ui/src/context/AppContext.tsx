@@ -1,4 +1,5 @@
 ﻿import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { toast } from 'sonner';
 import { get, post, put } from '../lib/api';
 import type {
   EnvironmentName,
@@ -38,6 +39,19 @@ export interface TestcaseGenerationProgress {
 export interface TestcaseGenerationOptions {
   signal?: AbortSignal;
   onProgress?: (progress: TestcaseGenerationProgress) => void;
+}
+
+export type TestcaseGenerationPhase = 'starting' | 'running' | 'cancelling' | 'completed' | 'failed' | 'cancelled';
+
+export interface TestcaseGenerationSession {
+  projectId: string;
+  packId: string;
+  packName: string;
+  targetCount: number;
+  startedAt: string;
+  phase: TestcaseGenerationPhase;
+  progress: TestcaseGenerationProgress | null;
+  error?: string;
 }
 
 export interface CreateTestPackInput {
@@ -92,9 +106,17 @@ interface AppState {
   duplicatePack: (id: string) => Promise<TestPack | null>;
   addCasesToPack: (packId: string, caseIds: string[]) => void;
   addGeneratedCases: (packId: string, count: number, request?: string, options?: TestcaseGenerationOptions) => Promise<number>;
+  testcaseGeneration: TestcaseGenerationSession | null;
+  testcaseGenerationActive: boolean;
+  cancelTestcaseGeneration: () => void;
+  generationPanelRequest: number;
+  requestGenerationPanel: () => void;
+  generationPanelVisible: boolean;
+  setGenerationPanelVisible: (visible: boolean) => void;
   createTestCase: (input: Partial<TestCase>, packId?: string | null) => Promise<TestCase>;
   updateTestCase: (id: string, input: Partial<TestCase>) => Promise<TestCase>;
-  importCases: (csvContent: string, fileName: string, packId: string | null) => Promise<number>;
+  importCases: (xlsxBase64: string, fileName: string, packId: string | null) => Promise<number>;
+  exportTestCases: (caseIds: string[], packId: string | null) => Promise<TestcaseExportBundle>;
   archiveTestCase: (id: string) => Promise<void>;
   createCycle: (cycle: Omit<TestCycle, 'id' | 'executions' | 'linkedDefects' | 'status'>) => TestCycle;
   updateCycle: (id: string, updates: Partial<TestCycle>) => void;
@@ -103,6 +125,18 @@ interface AppState {
   checkAI: () => Promise<void>;
   testAI: () => Promise<string>;
   unloadAI: () => Promise<void>;
+}
+
+export interface TestcaseExportBundle {
+  htmlUrl: string;
+  pdfUrl: string;
+  excelUrl: string;
+  wordUrl: string;
+  csvUrl: string;
+  jsonUrl: string;
+  total: number;
+  projectName: string;
+  packName: string;
 }
 
 type RawRecord = Record<string, any>;
@@ -312,6 +346,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [aiStatus, setAIStatus] = useState<LocalAIStatus>(defaultAI);
+  const [testcaseGeneration, setTestcaseGeneration] = useState<TestcaseGenerationSession | null>(null);
+  const [generationPanelRequest, setGenerationPanelRequest] = useState(0);
+  const [generationPanelVisible, setGenerationPanelVisible] = useState(false);
+  const testcaseGenerationBusyRef = useRef(false);
+  const testcaseGenerationControllerRef = useRef<AbortController | null>(null);
   const suitesByProject = useRef<Record<string, string>>({});
 
   useEffect(() => {
@@ -572,35 +611,75 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     request = 'Generate professional test cases for the selected Test Pack.',
     options: TestcaseGenerationOptions = {}
   ): Promise<number> => {
+    if (testcaseGenerationBusyRef.current) {
+      throw new Error('Another Local AI generation is already running. Open its progress panel to review or cancel it first.');
+    }
     const pack = testPacks.find((item) => item.id === packId);
-    const targetId = pack?.defaultTargetId || currentProject.defaultTargetId;
-    let progress = await post<TestcaseGenerationProgress>('/api/testcase-files/generate', {
-      projectId: currentProject.id, suiteId: suitesByProject.current[currentProject.id], targetId, packId,
-      url: getTargetUrl(currentProject.id, targetId, pack?.defaultEnvironment || environment),
-      userRequest: `${request}\nCoverage target: approximately ${count} cases.`,
-    });
-    options.onProgress?.(progress);
+    if (!pack) throw new Error('The selected Test Pack is unavailable.');
+    const project = projects.find((item) => item.id === pack.projectId);
+    if (!project) throw new Error('The selected project is unavailable.');
+
+    const targetId = pack.defaultTargetId || project.defaultTargetId;
+    const selectedEnvironment = pack.defaultEnvironment || environment;
+    const controller = new AbortController();
+    const startedAt = new Date().toISOString();
+    let progress: TestcaseGenerationProgress | null = null;
     let lastRenderedCount = 0;
+    let cancellationRequested = false;
     let cancellationSent = false;
+    testcaseGenerationBusyRef.current = true;
+    testcaseGenerationControllerRef.current = controller;
+    setTestcaseGeneration({
+      projectId: project.id,
+      packId,
+      packName: pack.name,
+      targetCount: count,
+      startedAt,
+      phase: 'starting',
+      progress: null,
+    });
 
     const requestCancellation = () => {
-      if (cancellationSent) return;
+      cancellationRequested = true;
+      setTestcaseGeneration((session) => session ? { ...session, phase: 'cancelling' } : session);
+      if (cancellationSent || !progress?.id) return;
       cancellationSent = true;
       void post<TestcaseGenerationProgress>(
         `/api/testcase-files/generate/${encodeURIComponent(progress.id)}/cancel`,
         {}
       ).catch(() => undefined);
     };
-    options.signal?.addEventListener('abort', requestCancellation, { once: true });
+    controller.signal.addEventListener('abort', requestCancellation);
+    const relayExternalAbort = () => controller.abort();
+    options.signal?.addEventListener('abort', relayExternalAbort, { once: true });
+    if (options.signal?.aborted) controller.abort();
 
     try {
+      progress = await post<TestcaseGenerationProgress>('/api/testcase-files/generate', {
+        projectId: project.id,
+        suiteId: suitesByProject.current[project.id],
+        targetId,
+        packId,
+        environment: environmentValue(selectedEnvironment),
+        url: getTargetUrl(project.id, targetId, selectedEnvironment),
+        userRequest: `${request}\nCoverage target: approximately ${count} cases.`,
+      });
+      if (controller.signal.aborted || cancellationRequested) requestCancellation();
+      options.onProgress?.(progress);
+      setTestcaseGeneration((session) => session ? { ...session, phase: 'running', progress } : session);
+
       while (!['completed', 'failed', 'cancelled'].includes(progress.status)) {
-        if (options.signal?.aborted) requestCancellation();
+        if (controller.signal.aborted) requestCancellation();
         await new Promise((resolve) => window.setTimeout(resolve, 1200));
         progress = await get<TestcaseGenerationProgress>(
           `/api/testcase-files/generate/${encodeURIComponent(progress.id)}`
         );
         options.onProgress?.(progress);
+        setTestcaseGeneration((session) => session ? {
+          ...session,
+          phase: controller.signal.aborted ? 'cancelling' : 'running',
+          progress,
+        } : session);
         if (progress.generatedCount > lastRenderedCount) {
           lastRenderedCount = progress.generatedCount;
           await refresh();
@@ -609,13 +688,46 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
       await refresh();
       if (progress.status === 'completed') {
-        return progress.persistedCaseIds?.length || progress.generatedCount || 0;
+        const saved = progress.persistedCaseIds?.length || progress.generatedCount || 0;
+        setTestcaseGeneration((session) => session ? { ...session, phase: 'completed', progress } : session);
+        toast.success(`${saved} AI-generated test cases saved in ${pack.name}.`);
+        return saved;
       }
       throw new Error(progress.error || progress.message || 'Test case generation did not complete.');
+    } catch (generationError) {
+      const message = generationError instanceof Error ? generationError.message : String(generationError);
+      const cancelled = controller.signal.aborted || progress?.status === 'cancelled' || /cancelled|canceled/i.test(message);
+      setTestcaseGeneration((session) => session ? {
+        ...session,
+        phase: cancelled ? 'cancelled' : 'failed',
+        progress,
+        error: cancelled ? undefined : message,
+      } : session);
+      if (cancelled) {
+        toast.info(`Generation cancelled. ${progress?.generatedCount || 0} partial cases were kept.`);
+      } else {
+        toast.error(`AI generation failed: ${message}`);
+      }
+      throw generationError;
     } finally {
-      options.signal?.removeEventListener('abort', requestCancellation);
+      controller.signal.removeEventListener('abort', requestCancellation);
+      options.signal?.removeEventListener('abort', relayExternalAbort);
+      if (testcaseGenerationControllerRef.current === controller) {
+        testcaseGenerationControllerRef.current = null;
+      }
+      testcaseGenerationBusyRef.current = false;
     }
   };
+
+  const cancelTestcaseGeneration = () => {
+    if (!testcaseGenerationBusyRef.current) return;
+    setTestcaseGeneration((session) => session ? { ...session, phase: 'cancelling' } : session);
+    testcaseGenerationControllerRef.current?.abort();
+  };
+
+  const testcaseGenerationActive = testcaseGeneration?.phase === 'starting'
+    || testcaseGeneration?.phase === 'running'
+    || testcaseGeneration?.phase === 'cancelling';
 
   const createTestCase = async (input: Partial<TestCase>, packId?: string | null): Promise<TestCase> => {
     const suiteId = suitesByProject.current[currentProject.id];
@@ -663,7 +775,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return mapped;
   };
 
-  const importCases = async (csvContent: string, fileName: string, packId: string | null): Promise<number> => {
+  const importCases = async (xlsxBase64: string, fileName: string, packId: string | null): Promise<number> => {
     const targetId = currentProject.defaultTargetId;
     const result = await post<{ persistedCaseIds?: string[] }>('/api/testcase-files/import', {
       projectId: currentProject.id,
@@ -671,11 +783,22 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       targetId,
       packId,
       url: getTargetUrl(currentProject.id, targetId, environment),
-      csvContent,
+      xlsxBase64,
       fileName,
     });
     await refresh();
     return result.persistedCaseIds?.length || 0;
+  };
+
+  const exportTestCases = async (caseIds: string[], packId: string | null): Promise<TestcaseExportBundle> => {
+    const suiteId = suitesByProject.current[currentProject.id];
+    if (!suiteId) throw new Error('The project has no Test Suite.');
+    return post<TestcaseExportBundle>('/api/testcase-files/export', {
+      projectId: currentProject.id,
+      suiteId,
+      packId,
+      caseIds,
+    });
   };
 
   const archiveTestCase = async (id: string) => {
@@ -721,7 +844,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     loading, error, refresh, projects, createProject, currentProject, setCurrentProjectId, environment, setEnvironment,
     getTarget, getTargetUrl, setLocalTargetUrl, testCases, testPacks, runs, cycles, smokeIntent, requestSmokeRun,
     clearSmokeIntent: () => setSmokeIntent(null), startRun, generateRunReport, updateRunStatus, createTestPack, updatePack, duplicatePack,
-    addCasesToPack, addGeneratedCases, createTestCase, updateTestCase, importCases, archiveTestCase, createCycle, updateCycle, saveManualExecution,
+    addCasesToPack, addGeneratedCases, testcaseGeneration, testcaseGenerationActive, cancelTestcaseGeneration,
+    generationPanelRequest, requestGenerationPanel: () => setGenerationPanelRequest((value) => value + 1),
+    generationPanelVisible, setGenerationPanelVisible,
+    createTestCase, updateTestCase, importCases, exportTestCases, archiveTestCase, createCycle, updateCycle, saveManualExecution,
     aiStatus, checkAI, testAI, unloadAI,
   };
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
